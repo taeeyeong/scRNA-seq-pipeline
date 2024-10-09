@@ -38,19 +38,108 @@ class ScRNAseqPipeline:
         try:
             self.logger.info('Loading data from {}'.format(self.data_path))
             
-            # if file type is not offered, detect file type automatically
-            if self.file_type is None:
-                if os.path.isdir(self.data_path):
-                    self.file_type = '10x_mtx'
-                elif self.data_path.endswith('.h5ad'):
-                    self.file_type = 'h5ad'
-                else:
-                    self.logger.error('Unsupported data format')
-                    sys.exit(1)
+            if os.path.isdir(self.data_path):
+                self.file_type = '10x_mtx'
+            elif self.data_path.endswith('.h5ad'):
+                self.file_type = 'h5ad'
+            else:
+                self.logger.error('Unsupported data format')
+                sys.exit(1)
         
         except Exception as e:
             self.logger.error('Error loading data: {}'.format(e))
             sys.exit(1)
+    
+    def quality_control(self):
+        """_summary_
+            perform quality control on the data
+        """
+        self.logger.info('Starting quality control')
+        try:
+            pass
+        except Exception as e:
+            self.logger.error('Error during quality control: {}'.format(e))
+            sys.exit(1)
+    
+    def preprocess_data(self):
+        """_summary_
+            Normalization and scaling of the data
+        """
+        self.logger.info('Starting data preprocessing')
+        try:
+            pass
+        except Exception as e:
+            self.logger.error('Error during data preprocessing: {}'.format(e))
+            sys.exit(1)
+    
+    def run_pca(self):
+        """_summary_
+            Run PCA on the data and visualize the results
+        """
+        self.logger.info('Starting PCA')
+        try:
+            pass
+        except Exception as e:
+            self.logger.error('Error during PCA: {}'.format(e))
+            sys.exit(1)
+    
+    def clustering(self):
+        """_summary_
+            Perform finding neighbors and clustering on the data
+        """
+        self.logger.info('Starting clustering')
+        try:
+            pass
+        except Exception as e:
+            self.logger.error('Error during clustering: {}'.format(e))
+            sys.exit(1)
+    
+    def visualize_clusters(self):
+        """_summary_
+            Visualize the clustering results using UMAP
+        """
+        self.logger.info('Starting visualization of clusters')
+        try:
+            pass
+        except Exception as e:
+            self.logger.error('Error during visualization of clusters: {}'.format(e))
+            sys.exit(1)
+    
+    def annotate_cell_types(self):
+        """_summary_
+            Annotate cell types based on Celltypist
+        """
+        self.logger.info('Starting cell type annotation')
+        try:
+            pass
+        except Exception as e:
+            self.logger.error('Error during cell type annotation: {}'.format(e))
+            sys.exit(1)
+    
+    def save_results(self):
+        """_summary_
+            Save the results of the pipeline
+        """
+        self.logger.info('Saving results')
+        try:
+            pass
+        except Exception as e:
+            self.logger.error('Error saving results: {}'.format(e))
+            sys.exit(1)
+    
+    def run_pipeline(self):
+        """_summary_
+            Run the entire pipeline
+        """
+        self.load_data()
+        self.quality_control()
+        self.preprocess_data()
+        self.run_pca()
+        self.clustering()
+        self.visualize_clusters()
+        self.annotate_cell_types()
+        self.save_results()
+        self.logger.info('Pipeline execution completed successfully')
         
 def parse_argments():
     parser = argparse.ArgumentParser(description="Single cell RNA-seq pipeline")
@@ -63,7 +152,12 @@ def parse_argments():
 def main():
     args = parse_argments()
     
-    pipeline = ScRNAseqPipeline()
+    pipeline = ScRNAseqPipeline(
+        data_path=args.data_path,
+        output_dir=args.output_dir,
+        n_dims=args.n_dims,
+        random_state=args.random_state
+    )
 
 if __name__ == "__main__":
     main()
