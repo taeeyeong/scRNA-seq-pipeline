@@ -2,7 +2,10 @@ import os
 import sys
 import argparse
 import logging
+import numpy as np
 import scanpy as sc
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 from multiprocessing import Pool, cpu_count
 from scipy import sparse
@@ -74,7 +77,55 @@ class ScRNAseqPipeline:
         """
         self.logger.info('Starting quality control')
         try:
-            pass
+            # Mitochondrial gene ratio
+            self.adata.var['mt'] = self.adata.var_names.str.startswith('MT-')
+            sc.pp.calculate_qc_metrics(
+                self.adata, qc_vars=['mt'], percent_top=None, log1p=False, inplace=True
+            )
+            # visualize quality control metrics
+            sc.pl.violin(
+                self.adata, 
+                ['n_genes_by_counts', 'total_counts', 'pct_counts_mt'], 
+                jitter=0.4, 
+                multi_panel=True, 
+                save='_qc_violin.png'
+            )
+            # visualize n_genes_by_counts distribution
+            sns.histplot(self.adata.obs['n_genes_by_counts'], bins=50)
+            plt.xlabel('n_genes_by_counts')
+            plt.ylabel('Number of cells')
+            plt.title('Distribution of n_genes_by_counts')
+            plt.savefig(os.path.join(self.output_dir, 'n_genes_by_counts_distribution.png'))
+            plt.close()
+            
+            # lowest threshold for number of genes and counts
+            X = np.percentile(self.adata.obs['n_genes_by_counts'], 5) # lower threshold: 5%
+            Y = np.percentile(self.adata.obs['total_counts'], 99) # upper threshold: 1%
+            
+            self.logger.info(f"Calculated lower threshold (X): {X}")
+            self.logger.info(f"Calculated upper threshold (Y): {Y}")
+            
+            # visualize pct_counts_mt distribution
+            sns.histplot(self.adata.obs['pct_counts_mt'], bins=50)
+            plt.xlabel('pct_counts_mt')
+            plt.ylabel('Number of cells')
+            plt.title('Distribution of pct_counts_mt')
+            plt.savefig(os.path.join(self.output_dir, 'pct_counts_mt_distribution.png'))
+            plt.close()
+            
+            Z = np.percentile(self.adata.obs['pct_counts_mt'], 90) # upper threshold: 90%
+            self.logger.info(f"Calculated upper threshold for pct_counts_mt (Z): {Z}")
+            
+            # Filtering
+            initial_cell_count = self.adata.n_obs
+            self.adata = self.adata[self.adata.obs.n_genes_by_counts > X, :]
+            self.adata = self.adata[self.adata.obs.total_counts < Y, :]
+            self.adata = self.adata[self.adata.obs.pct_counts_mt < Z, :]
+            filtered_cell_count = self.adata.n_obs
+            
+            self.logger.info(f"Cells before QC: {initial_cell_count}")
+            self.logger.info(f"Cells after QC: {filtered_cell_count}")
+            self.logger.info('Quliaity control completed')
         except Exception as e:
             self.logger.error('Error during quality control: {}'.format(e))
             sys.exit(1)
@@ -139,9 +190,9 @@ class ScRNAseqPipeline:
             Compute correlation between gene of interest and the other genes
             
            _note_
-           	•벡터 연산 활용: 루프를 제거하고 Numpy 배열 연산으로 대체하여 계산 속도를 높였습니다.
-	        •메모리 관리: toarray()를 사용하여 희소 행렬을 밀집 행렬로 변환하므로, 메모리 사용량이 증가할 수 있습니다. 
-                데이터가 매우 큰 경우 아래의 배치 처리 또는 희소 행렬 연산 방법을 고려하세요.
+           	•벡터 연산 활용: 루프를 제거하고 Numpy 배열 연산으로 대체하여 계산 속도를 높임
+	        •메모리 관리: toarray()를 사용하여 희소 행렬을 밀집 행렬로 변환하므로, 메모리 사용량이 증가할 수 있음
+                데이터가 매우 큰 경우 아래의 배치 처리 또는 희소 행렬 연산 방법을 고려
             - multi processing: 여러 프로세스에서 병렬로 상관계수 계산 
         """
         gene_exp = self.adata[:, self.gene].X
