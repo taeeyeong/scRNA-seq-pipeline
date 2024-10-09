@@ -71,6 +71,7 @@ class ScRNAseqPipeline:
             self.logger.error('Error loading data: {}'.format(e))
             sys.exit(1)
     
+    # TODO: 시각화 skip 기능 추가 
     def quality_control(self):
         """_summary_
             perform quality control on the data
@@ -136,7 +137,15 @@ class ScRNAseqPipeline:
         """
         self.logger.info('Starting data preprocessing')
         try:
-            pass
+            # Normalization
+            sc.pp.normalize_total(self.adata, target_sum=1e4)
+            # Logarithmize the data
+            sc.pp.log1p(self.adata)
+            
+            # TODO: Scaling method 추가 (Celltypist 할땐 skip 해야함)
+            self.logger.info('Data preprocessing completed')
+            # Scaling
+            
         except Exception as e:
             self.logger.error('Error during data preprocessing: {}'.format(e))
             sys.exit(1)
