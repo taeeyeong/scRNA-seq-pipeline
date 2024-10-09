@@ -7,6 +7,7 @@ import scanpy as sc
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+import celltypist
 from multiprocessing import Pool, cpu_count
 from scipy import sparse
 from scipy.stats import pearsonr
@@ -178,7 +179,18 @@ class ScRNAseqPipeline:
         """
         self.logger.info('Starting visualization of clusters')
         try:
-            pass
+            celltypist.models.download_models()
+            # TODO: 모델 선택 기능 추가
+            model = celltypist.models.Model.load(model='Immune_All_Low.pkl')
+            predictions = celltypist.annotate(
+                self.adata,
+                model=model,
+                majority_voting=True,
+            )
+            self.adata.obs['cell_type'] = predictions.predicted_labels.predicted_labels
+            # visualization
+            sc.pl.umap(self.adata, color='cell_type', save='_celltype_annotation.png')
+            self.logger.info('Cell type annotation completed')
         except Exception as e:
             self.logger.error('Error during visualization of clusters: {}'.format(e))
             sys.exit(1)
