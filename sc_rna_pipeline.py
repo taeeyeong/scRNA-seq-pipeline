@@ -209,25 +209,34 @@ class ScRNAseqPipeline:
     def compute_correlation(self, gene):
         """_summary_
             Compute correlation between gene of interest and the other genes
-            
-           _note_
-           	•벡터 연산 활용: 루프를 제거하고 Numpy 배열 연산으로 대체하여 계산 속도를 높임
-	        •메모리 관리: toarray()를 사용하여 희소 행렬을 밀집 행렬로 변환하므로, 메모리 사용량이 증가할 수 있음
-                데이터가 매우 큰 경우 아래의 배치 처리 또는 희소 행렬 연산 방법을 고려
-            - multi processing: 여러 프로세스에서 병렬로 상관계수 계산 
+
+            Args:
+                gene: gene compute correlation with gene of interest
+    
+            Note:
+           	    - 벡터 연산 활용: 루프를 제거하고 Numpy 배열 연산으로 대체하여 계산 속도를 높임
+	            - 메모리 관리: toarray()를 사용하여 희소 행렬을 밀집 행렬로 변환하므로, 메모리 사용량이 증가할 수 있음
+                    데이터가 매우 큰 경우 아래의 배치 처리 또는 희소 행렬 연산 방법을 고려
+                - multi processing: 여러 프로세스에서 병렬로 상관계수 계산 
         """
-        gene_exp = self.adata[:, self.gene].X
-        gene_data = self.adata[:, gene].X
-        if sparse.issparse(gene_exp):
-            gene_exp = gene_exp.toarray().flatten()
-        else:
-            gene_exp = gene_exp.flatten()
-        if sparse.issparse(gene_data):
-            gene_data = gene_data.toarray().flatten()
-        else:
-            gene_data = gene_data.flatten()
-        corr, p_value = pearsonr(gene_exp, gene_data)
-        return (gene, corr, p_value)
+        try: 
+            # TODO: multiprocessing 버전으로 수정 
+            self.logger.info(f'Computing correlation between {self.gene} and {gene}')
+            gene_exp = self.adata[:, self.gene].X
+            if sparse.issparse(gene_exp):
+                gene_exp = gene_exp.toarray().flatten()
+            else:
+                gene_exp = gene_exp.flatten()
+            gene_data = self.adata[:, gene].X
+            if sparse.issparse(gene_data):
+                gene_data = gene_data.toarray().flatten()
+            else:
+                gene_data = gene_data.flatten()
+            corr, p_value = pearsonr(gene_exp, gene_data)
+            return (gene, corr, p_value)
+        except Exception as e:
+            self.logger.error(f'Error computing correlation between {self.gene} and {gene}: {e}')
+            return (gene, np.nan, np.nan)
     
     def save_results(self):
         """_summary_
@@ -247,9 +256,9 @@ class ScRNAseqPipeline:
         self.load_data()
         self.quality_control()
         self.preprocess_data()
-        # self.run_pca()
-        # self.clustering()
-        # self.visualize_clusters()
+        self.run_pca()
+        self.clustering()
+        self.visualize_clusters()
         self.annotate_cell_types()
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
