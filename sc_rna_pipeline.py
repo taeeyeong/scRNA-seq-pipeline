@@ -8,12 +8,13 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 import celltypist
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool, cpu_count, Queue, current_process
 from scipy import sparse
 from scipy.stats import pearsonr
+from logging.handlers import QueueHandler, QueueListener
 
 class ScRNAseqPipeline:
-    def __init__(self, data_path, output_dir, gene, n_dims=6, random_state=42):
+    def __init__(self, data_path, output_dir, gene, n_dims=6, random_state=42, log_queue=None):
         self.data_path = data_path
         self.output_dir = output_dir
         self.gene = gene
@@ -21,24 +22,26 @@ class ScRNAseqPipeline:
         self.random_state = random_state
         self.adata = None
         
-        # logging
         self.logger = logging.getLogger('ScRNAseqPipeline')
         self.logger.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         
-        # stream handler
-        stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(formatter)
-        self.logger.addHandler(stream_handler)
-        
-        # file handler
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        file_handler = logging.FileHandler(os.path.join(output_dir, 'sc_rna_pipeline.log'))
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
-        
-        self.logger.info('Pipeline initialized')
+        if log_queue is not None:
+            queue_handler = QueueHandler(log_queue)
+            self.logger.addHandler(queue_handler)
+        else:
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(formatter)
+            self.logger.addHandler(stream_handler)
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            file_handler = logging.FileHandler(
+                os.path.join(output_dir, 'sc_rna_pipeline.log')
+            )
+            file_handler.setFormatter(formatter)
+            self.logger.addHandler(file_handler)
+            
+            self.logger.info('Pipeline initialized')
     
     def load_data(self):
         """_summary_
@@ -179,18 +182,10 @@ class ScRNAseqPipeline:
         """
         self.logger.info('Starting visualization of clusters')
         try:
-            celltypist.models.download_models()
-            # TODO: 모델 선택 기능 추가
-            model = celltypist.models.Model.load(model='Immune_All_Low.pkl')
-            predictions = celltypist.annotate(
-                self.adata,
-                model=model,
-                majority_voting=True,
-            )
-            self.adata.obs['cell_type'] = predictions.predicted_labels.predicted_labels
+            pass
             # visualization
-            sc.pl.umap(self.adata, color='cell_type', save='_celltype_annotation.png')
-            self.logger.info('Cell type annotation completed')
+            # sc.pl.umap(self.adata, color='cell_type', save='_celltype_annotation.png')
+            # self.logger.info('Cell type annotation completed')
         except Exception as e:
             self.logger.error('Error during visualization of clusters: {}'.format(e))
             sys.exit(1)
@@ -201,7 +196,15 @@ class ScRNAseqPipeline:
         """
         self.logger.info('Starting cell type annotation')
         try:
-            pass
+            celltypist.models.download_models()
+            # TODO: 모델 선택 기능 추가
+            model = celltypist.models.Model.load(model='Immune_All_Low.pkl')
+            predictions = celltypist.annotate(
+                self.adata,
+                model=model,
+                majority_voting=True,
+            )
+            self.adata.obs['cell_type'] = predictions.predicted_labels.predicted_labels
         except Exception as e:
             self.logger.error('Error during cell type annotation: {}'.format(e))
             sys.exit(1)
@@ -221,7 +224,7 @@ class ScRNAseqPipeline:
         """
         try: 
             # TODO: multiprocessing 버전으로 수정 
-            self.logger.info(f'Computing correlation between {self.gene} and {gene}')
+            self.logger.info(f'Process {current_process().name}: Computing correlation between {self.gene} and {gene}')
             gene_exp = self.adata[:, self.gene].X
             if sparse.issparse(gene_exp):
                 gene_exp = gene_exp.toarray().flatten()
@@ -262,7 +265,14 @@ class ScRNAseqPipeline:
         self.annotate_cell_types()
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
-        
+
+def init_process(log_queue):
+    logger = logging.getLogger('ScRNAseqPipeline')
+    logger.handlers = []
+    logger.setLevel(logging.INFO)
+    queue_handler = QueueHandler(log_queue)
+    logger.addHandler(queue_handler)  
+    
 def parse_argments():
     parser = argparse.ArgumentParser(description="Single cell RNA-seq pipeline")
     parser.add_argument('--data_path', type=str, required=True, help='Path to Cell Ranger output directory (filtered_feature_bc_matrix) or h5ad data format')
@@ -275,19 +285,44 @@ def parse_argments():
 def main():
     args = parse_argments()
     
+    log_queue = Queue()
+    
+    logger = logging.getLogger('ScRNAseqPipeline')
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # stream handler
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+        
+    # file handler
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    file_handler = logging.FileHandler(os.path.join(args.output_dir, 'sc_rna_pipeline.log'))
+    file_handler.setFormatter(formatter)
+
+    # Queue listener
+    handlers = [stream_handler, file_handler]
+    queue_listener = QueueListener(log_queue, *handlers)
+    queue_listener.start()
+    
     pipeline = ScRNAseqPipeline(
         data_path=args.data_path,
         output_dir=args.output_dir,
         gene=args.gene,
         n_dims=args.n_dims,
-        random_state=args.random_state
+        random_state=args.random_state,
+        log_queue=log_queue
     )
     pipeline.run_pipeline()
     
     all_genes = pipeline.adata.var_names.tolist()
     
-    with Pool(processes=cpu_count()) as pool:
+    num_processes = cpu_count()
+    with Pool(processes=num_processes, initializer=init_process, initargs=(log_queue,)) as pool:
         results = pool.map(pipeline.compute_correlation, all_genes)
+    
+    queue_listener.stop()
     
     correlations = results
     significant_genes = [item for item in correlations if item[2] < 0.05]
