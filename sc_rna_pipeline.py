@@ -211,90 +211,36 @@ class ScRNAseqPipeline:
             self.logger.error('Error during cell type annotation: {}'.format(e))
             sys.exit(1)
     
-    def compute_correlation(self, gene):
+    def compute_correlation(self, gene, only_highly_variable_genes=True, top_n=30):
         """_summary_
             Compute correlation between gene of interest and the other genes
 
             Args:
                 gene: gene compute correlation with gene of interest
-    
-            Note:
-           	    - 벡터 연산 활용: 루프를 제거하고 Numpy 배열 연산으로 대체하여 계산 속도를 높임
-	            - 메모리 관리: toarray()를 사용하여 희소 행렬을 밀집 행렬로 변환하므로, 메모리 사용량이 증가할 수 있음
-                    데이터가 매우 큰 경우 아래의 배치 처리 또는 희소 행렬 연산 방법을 고려
-                - multi processing: 여러 프로세스에서 병렬로 상관계수 계산 
         """
         try: 
             # TODO: multiprocessing 버전으로 수정 
             self.logger.info(f'Process {current_process().name}: Computing correlation between {self.gene} and {gene}')
-            gene_exp = self.adata[:, self.gene].X
-            if sparse.issparse(gene_exp):
-                gene_exp = gene_exp.toarray().flatten()
-            else:
-                gene_exp = gene_exp.flatten()
-            gene_data = self.adata[:, gene].X
-            if sparse.issparse(gene_data):
-                gene_data = gene_data.toarray().flatten()
-            else:
-                gene_data = gene_data.flatten()
-            corr, p_value = pearsonr(gene_exp, gene_data)
-            return (gene, corr, p_value)
+            if only_highly_variable_genes:
+                tg_mask = self.adata.var_names.isin(self.gene)
+                hvg_mask = self.adata.var.highly_variable
+                combined_mask = tg_mask | hvg_mask 
+                self.adata = self.adata[:, combined_mask].copy()
+            gene_exp = self.adata[:, self.gene].X.toarray().flatten()
+            all_genes = self.adata.var_names
+            correlations = []
+            for gene in all_genes:
+                gene_data = self.adata[:, gene].X.toarray().flatten()
+                corr, p_value = pearsonr(gene_exp, gene_data)
+                correlations.append(gene, corr, p_value)
+                print(f'{gene}: corr={corr}, p-value={p_value}')
+            significant_genes = [item for item in correlations if item[2] < 0.05]
+            top_genes = sorted(significant_genes, key=lambda x: -abs(x[1]))[:top_n]
+            return top_genes
+        
         except Exception as e:
             self.logger.error(f'Error computing correlation between {self.gene} and {gene}: {e}')
             return (gene, np.nan, np.nan)
-    
-    def compute_correlations_in_batches(self, batch_size=500):
-        """_summary_
-
-        Args:
-            batch_size (int, optional): _description_. Defaults to 500.
-        """
-        self.logger.info(f'Starting batched correlation computation for gene: {self.gene}')
-        
-        all_genes = self.adata.var_names.tolist()
-        gene_exp = self.adata[:, self.gene].X
-        if sparse.issparse(gene_exp):
-            gene_exp = gene_exp.toarray().flatten()
-        else:
-            gene_exp = gene_exp.flatten()
-        
-        total_genes = self.adata.shape[1]
-        indices = list(range(total_genes))
-
-        correlations = []
-        n = len(gene_exp)
-        gene_exp_z = scipy.stats.zscore(gene_exp, ddof=0)
-        
-        for start in range(0, len(indices), batch_size):
-            end = min(start + batch_size, len(indices))
-            batch_indices = indices[start: end]
-            batch_genes = [all_genes[i] for i in batch_indices]
-            gene_data = self.adata[:, batch_genes].X
-            if sparse.issparse(gene_data):
-                gene_data = gene_data.toarray()
-                
-            gene_data_z = scipy.stats.zscore(gene_data, axis=0)
-            
-            batch_correlations = np.dot(gene_data_z.T, gene_exp_z) / len(gene_exp_z)
-            t_values = batch_correlations * np.sqrt((n - 2) / (1 - batch_correlations**2))
-            p_values = 2 * scipy.stats.t.sf(np.abs(t_values), df= n - 2)
-            correlations.extend(zip(batch_genes, batch_correlations))
-        
-        correlations = [(gene, corr, p_val) for gene, corr, p_val in correlations if not np.isnan(corr)]
-        correlations.sort(key=lambda x: abs(x[1]), reverse=True)
-        
-        self.logger.info('Batched correlation computation completed')
-        return correlations
-    
-    def run_correlation(self):
-        correlations = self.compute_correlations_in_batches(batch_size=500)
-        
-        significant_genes = [item for item in correlations if item[2] < 0.05]
-        significant_genes.sort(key=lambda x: abs(x[1]), reverse=True)
-        
-        for gene, corr, p_value in significant_genes[:30]:
-            print(f'{gene}: corr={corr}, p-value={p_value}')
-        return significant_genes
             
     def save_results(self):
         """_summary_
@@ -318,6 +264,7 @@ class ScRNAseqPipeline:
         self.clustering()
         self.visualize_clusters()
         self.annotate_cell_types()
+        self.compute_correlation()
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
 
@@ -339,28 +286,7 @@ def parse_argments():
     
 def main():
     args = parse_argments()
-    
-    # log_queue = Queue()
-    
-    # logger = logging.getLogger('ScRNAseqPipeline')
-    # logger.setLevel(logging.INFO)
-    # formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
-    # # stream handler
-    # stream_handler = logging.StreamHandler()
-    # stream_handler.setFormatter(formatter)
-        
-    # # file handler
-    # if not os.path.exists(args.output_dir):
-    #     os.makedirs(args.output_dir)
-    # file_handler = logging.FileHandler(os.path.join(args.output_dir, 'sc_rna_pipeline.log'))
-    # file_handler.setFormatter(formatter)
-
-    # # Queue listener
-    # handlers = [stream_handler, file_handler]
-    # queue_listener = QueueListener(log_queue, *handlers)
-    # queue_listener.start()
-    
+       
     pipeline = ScRNAseqPipeline(
         data_path=args.data_path,
         output_dir=args.output_dir,
@@ -369,22 +295,6 @@ def main():
         random_state=args.random_state,
     )
     pipeline.run_pipeline()
-    pipeline.run_correlation()
-    
-    # all_genes = pipeline.adata.var_names.tolist()
-    
-    # num_processes = cpu_count()
-    # with Pool(processes=num_processes, initializer=init_process, initargs=(log_queue,)) as pool:
-    #     results = pool.map(pipeline.compute_correlation, all_genes)
-    
-    # queue_listener.stop()
-    
-    # correlations = results
-    # significant_genes = [item for item in correlations if item[2] < 0.05]
-    # significant_genes.sort(key=lambda x: abs(x[1]), reverse=True)
-    
-    # for gene, corr, p_value in significant_genes[:30]:
-    #     print(f'{gene}: corr={corr}, p-value={p_value}')
     
 if __name__ == "__main__":
     main()
