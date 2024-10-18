@@ -4,25 +4,34 @@ import argparse
 import logging
 import numpy as np
 import scanpy as sc
-import scipy.stats
 import seaborn as sns
 import matplotlib.pyplot as plt
 
 import celltypist
-from multiprocessing import Pool, cpu_count, Queue, current_process
-import scipy
-from scipy import sparse
+from multiprocessing import current_process
 from scipy.stats import pearsonr
-from logging.handlers import QueueHandler, QueueListener
+from logging.handlers import QueueHandler
 
 class ScRNAseqPipeline:
-    def __init__(self, data_path, output_dir, gene, n_dims=4, random_state=42):
+    def __init__(
+        self, data_path, output_dir, gene, n_dims=4, random_state=42, skip_qc=False,
+        skip_preprocessing=False, skip_pca=False, skip_clustering=False,
+        skip_visualization=False, skip_annotation=False, skip_correlation=False
+        ):
         self.data_path = data_path
         self.output_dir = output_dir
         self.gene = gene
         self.n_dims = n_dims
         self.random_state = random_state
         self.adata = None
+        
+        self.skip_qc = skip_qc
+        self.skip_preprocessing = skip_preprocessing
+        self.skip_pca = skip_pca
+        self.skip_clustering = skip_clustering
+        self.skip_visualizaton = skip_visualization
+        self.skip_annotation = skip_annotation
+        self.skip_correlation = skip_correlation
         
         self.logger = logging.getLogger('ScRNAseqPipeline')
         self.logger.setLevel(logging.INFO)
@@ -219,7 +228,6 @@ class ScRNAseqPipeline:
                 gene: gene compute correlation with gene of interest
         """
         try: 
-            # TODO: multiprocessing 버전으로 수정 
             self.logger.info(f'Process {current_process().name}: Computing correlation between {self.gene} and {gene}')
             if only_highly_variable_genes:
                 tg_mask = self.adata.var_names.isin(self.gene)
@@ -253,18 +261,46 @@ class ScRNAseqPipeline:
             self.logger.error('Error saving results: {}'.format(e))
             sys.exit(1)
     
+    # TODO: 일부 단계는 이전단계가 필요. 의존성 고려해서 사용자에게 경고 메시지 출력 | 강제로 이전 단계 실행
     def run_pipeline(self):
         """_summary_
             Run the entire pipeline
         """
         self.load_data()
-        self.quality_control()
-        self.preprocess_data()
-        self.run_pca()
-        self.clustering()
-        self.visualize_clusters()
-        self.annotate_cell_types()
-        self.compute_correlation()
+        if not self.skip_qc:
+            self.quality_control()
+        else:
+            self.logger.info('Skipping quality control step')
+            
+        if not self.skip_preprocessing:
+            self.preprocess_data()
+        else:
+            self.logger.info('Skipping preprocessing step')
+        
+        if not self.skip_pca:
+            self.run_pca()
+        else:
+            self.logger.info('Skipping PCA step')
+        
+        if not self.skip_clustering:
+            self.clustering()
+        else:
+            self.logger.info('Skipping clustering step')
+        
+        if not self.skip_visualizaton:
+            self.visualize_clusters()
+        else:
+            self.logger.info('Skipping visualization step')
+        
+        if not self.skip_annotation:
+            self.annotate_cell_types()
+        else:
+            self.logger.info('Skipping cell type annotation step')
+        
+        if not self.skip_correlation:
+            self.compute_correlation()
+        else:
+            self.logger.info('Skipping correlation computation step')
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
 
@@ -282,6 +318,14 @@ def parse_argments():
     parser.add_argument('--gene', type=str, help='Gene of interest to compute correlation')
     parser.add_argument('--n_dims', type=int, default=4, help='Number of principal components to use')
     parser.add_argument('--random_state', type=int, default=42, help='Random state for reproducibility')
+    parser.add_argument('--skip_qc', action='store_true', help='Skip the quality control step')
+    parser.add_argument('--skip_preprocessing', action='store_true', help='Skip the preprocessing step')
+    parser.add_argument('--skip_pca', action='store_true', help='Skip the PCA step')
+    parser.add_argument('--skip_clustering', action='store_true', help='Skip the clustering step')
+    parser.add_argument('--skip_visualization', action='store_true', help='Skip the visualization step')
+    parser.add_argument('--skip_annotation', action='store_true', help='Skip the cell type annotation step')
+    parser.add_argument('--skip_correlation', action='store_true', help='Skip the correlation computation step')
+    
     return parser.parse_args()
     
 def main():
@@ -293,6 +337,13 @@ def main():
         gene=args.gene,
         n_dims=args.n_dims,
         random_state=args.random_state,
+        skip_qc=args.skip_qc,
+        skip_preprocessing=args.skip_preprocessing,
+        skip_pca=args.skip_pca,
+        skip_clustering=args.skip_clustering,
+        skip_visualization=args.skip_visualization,
+        skip_annotation=args.skip_annotation,
+        skip_correlation=args.skip_correlation
     )
     pipeline.run_pipeline()
     
