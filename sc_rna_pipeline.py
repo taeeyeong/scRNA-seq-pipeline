@@ -15,8 +15,9 @@ from logging.handlers import QueueHandler
 class ScRNAseqPipeline:
     def __init__(
         self, data_path, output_dir, gene, n_dims=4, random_state=42, skip_qc=False,
-        skip_preprocessing=False, skip_pca=False, skip_clustering=False,
-        skip_visualization=False, skip_annotation=False, skip_correlation=False
+        only_highly_variable_genes=False, skip_preprocessing=False, skip_pca=False, 
+        skip_clustering=False, skip_visualization=False, skip_annotation=False, 
+        skip_correlation=False
         ):
         self.data_path = data_path
         self.output_dir = output_dir
@@ -25,6 +26,7 @@ class ScRNAseqPipeline:
         self.random_state = random_state
         self.adata = None
         
+        self.only_highly_variable_genes = only_highly_variable_genes
         self.skip_qc = skip_qc
         self.skip_preprocessing = skip_preprocessing
         self.skip_pca = skip_pca
@@ -77,7 +79,13 @@ class ScRNAseqPipeline:
             else:
                 self.logger.error('Unsupported data format')
                 sys.exit(1)
-        
+            
+            if self.only_highly_variable_genes:
+                tg_mask = self.adata.var_names.isin([self.gene])
+                hvg_mask = self.adata.var.highly_variable
+                combined_mask = tg_mask | hvg_mask 
+                self.adata = self.adata[:, combined_mask].copy()
+        #TODO: loaded data 출력 (cells, genes)
         except Exception as e:
             self.logger.error('Error loading data: {}'.format(e))
             sys.exit(1)
@@ -155,7 +163,6 @@ class ScRNAseqPipeline:
             
             # find highly variable genes
             sc.pp.highly_variable_genes(self.adata, n_top_genes=2000)
-            self.adata = self.adata[:, self.adata.var.highly_variable]
             
             # TODO: Scaling method 추가 (Celltypist 할땐 skip 해야함)
             self.logger.info('Data preprocessing completed')
@@ -164,6 +171,25 @@ class ScRNAseqPipeline:
         except Exception as e:
             self.logger.error('Error during data preprocessing: {}'.format(e))
             sys.exit(1)
+
+    def annotate_cell_types(self):
+        """_summary_
+            Annotate cell types based on Celltypist
+        """
+        self.logger.info('Starting cell type annotation')
+        try:
+            celltypist.models.download_models()
+            # TODO: 모델 선택 기능 추가
+            model = celltypist.models.Model.load(model='Immune_All_High.pkl')
+            predictions = celltypist.annotate(
+                self.adata,
+                model=model,
+                majority_voting=True,
+            )
+            self.adata.obs['cell_type'] = predictions.predicted_labels.predicted_labels
+        except Exception as e:
+            self.logger.error('Error during cell type annotation: {}'.format(e))
+            sys.exit(1)
     
     def run_pca(self):
         """_summary_
@@ -171,11 +197,36 @@ class ScRNAseqPipeline:
         """
         self.logger.info('Starting PCA')
         try:
-            pass
+            sc.pp.scale(self.adata, max_value=10)
+            sc.pp.pca(self.adata, svd_solver='arpack')
+            sc.pl.pca_variance_ratio(self.adata, log=False, save='_pc_elbow_plot.png')
         except Exception as e:
             self.logger.error('Error during PCA: {}'.format(e))
             sys.exit(1)
     
+    # TODO: tSNE pca 과정 필요
+    def run_tsne(self):
+        """_summary_
+            Run tSNE 
+        """
+        self.logger.info('Starting tSNE')
+        label = 'predicted_celltype' # TODO: label 어떻게 받아올건지 
+        try:
+            sc.tl.tsne(self.adata, n_pcs=self.n_dims)
+            cmap=plt.colormaps['viridis']
+            sc.pl.tsne(
+                self.adata,
+                color=label,
+                cmap=cmap,
+                size=5,
+                title='Predicted Cell Type', # TODO: 어떻게 받아올건지
+                legend_loc='right margin',
+                save='_tSNE.png' 
+            )
+        except Exception as e:
+            self.logger.error('Error during tSNE: {}'.format(e))
+            sys.exit(1)
+        
     def clustering(self):
         """_summary_
             Perform finding neighbors and clustering on the data
@@ -201,26 +252,7 @@ class ScRNAseqPipeline:
             self.logger.error('Error during visualization of clusters: {}'.format(e))
             sys.exit(1)
     
-    def annotate_cell_types(self):
-        """_summary_
-            Annotate cell types based on Celltypist
-        """
-        self.logger.info('Starting cell type annotation')
-        try:
-            celltypist.models.download_models()
-            # TODO: 모델 선택 기능 추가
-            model = celltypist.models.Model.load(model='Immune_All_Low.pkl')
-            predictions = celltypist.annotate(
-                self.adata,
-                model=model,
-                majority_voting=True,
-            )
-            self.adata.obs['cell_type'] = predictions.predicted_labels.predicted_labels
-        except Exception as e:
-            self.logger.error('Error during cell type annotation: {}'.format(e))
-            sys.exit(1)
-    
-    def compute_correlation(self, gene, only_highly_variable_genes=True, top_n=30):
+    def compute_correlation(self, gene, top_n=30):
         """_summary_
             Compute correlation between gene of interest and the other genes
 
@@ -229,7 +261,7 @@ class ScRNAseqPipeline:
         """
         try: 
             self.logger.info(f'Process {current_process().name}: Computing correlation between {self.gene} and {gene}')
-            if only_highly_variable_genes:
+            if self.only_highly_variable_genes:
                 tg_mask = self.adata.var_names.isin(self.gene)
                 hvg_mask = self.adata.var.highly_variable
                 combined_mask = tg_mask | hvg_mask 
@@ -277,6 +309,11 @@ class ScRNAseqPipeline:
         else:
             self.logger.info('Skipping preprocessing step')
         
+        if not self.skip_annotation:
+            self.annotate_cell_types()
+        else:
+            self.logger.info('Skipping cell type annotation step')
+                  
         if not self.skip_pca:
             self.run_pca()
         else:
@@ -287,15 +324,13 @@ class ScRNAseqPipeline:
         else:
             self.logger.info('Skipping clustering step')
         
+        #TODO: add skip step 
+        self.run_tsne()
+        
         if not self.skip_visualizaton:
             self.visualize_clusters()
         else:
             self.logger.info('Skipping visualization step')
-        
-        if not self.skip_annotation:
-            self.annotate_cell_types()
-        else:
-            self.logger.info('Skipping cell type annotation step')
         
         if not self.skip_correlation:
             self.compute_correlation()
@@ -318,6 +353,8 @@ def parse_argments():
     parser.add_argument('--gene', type=str, help='Gene of interest to compute correlation')
     parser.add_argument('--n_dims', type=int, default=4, help='Number of principal components to use')
     parser.add_argument('--random_state', type=int, default=42, help='Random state for reproducibility')
+    
+    parser.add_argument('--only_highly_variable_genes', action='store_true', help='Using only highly variable genes in all analysis steps')
     parser.add_argument('--skip_qc', action='store_true', help='Skip the quality control step')
     parser.add_argument('--skip_preprocessing', action='store_true', help='Skip the preprocessing step')
     parser.add_argument('--skip_pca', action='store_true', help='Skip the PCA step')
@@ -337,6 +374,7 @@ def main():
         gene=args.gene,
         n_dims=args.n_dims,
         random_state=args.random_state,
+        only_highly_variable_genes=args.only_highly_variable_genes,
         skip_qc=args.skip_qc,
         skip_preprocessing=args.skip_preprocessing,
         skip_pca=args.skip_pca,
