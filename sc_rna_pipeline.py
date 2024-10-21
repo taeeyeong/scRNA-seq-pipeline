@@ -1,3 +1,4 @@
+# TODO: sphinx setting
 import os
 import sys
 import argparse
@@ -204,24 +205,59 @@ class ScRNAseqPipeline:
             self.logger.error('Error during PCA: {}'.format(e))
             sys.exit(1)
     
-    # TODO: tSNE pca 과정 필요
-    def run_tsne(self):
+    def add_gene_expression_to_obs(self, genes):
         """_summary_
-            Run tSNE 
+
+        Args:
+            genes (List[str]): List of gene names
+
+        Returns:
+            _type_: _description_
         """
-        self.logger.info('Starting tSNE')
-        label = 'predicted_celltype' # TODO: label 어떻게 받아올건지 
+        if isinstance(genes, str):
+            genes = [genes]
+        
+        status_columns = []
+        for gene in genes:
+            if gene not in self.adata.var_names:
+                self.logger.error(f'Gene {gene} not found in the dataset.')
+                sys.exit(1)
+            gene_exp = self.adata[:, gene].X.toarray().flatten()
+            gene_status = np.where(gene_exp > 0, 'Expressed', 'Not expressed')
+            gene_label = [f'{gene}: {status}' for status in gene_status]
+            column_name = f'{gene}_status'
+            self.adata.obs[column_name] = gene_label
+            status_columns.append(column_name)
+            self.logger.info(f'Added {column_name} to adata.obs')
+        combined_status = self.adata.obs[status_columns].agg(' | '.join, axis=1)
+        combined_label_name = '_'.join(genes) + '_combined_status'
+        self.adata.obs[combined_label_name] = combined_status
+        self.logger.info(f'Added {combined_label_name} to adata.obs')
+        
+    # TODO: tSNE pca 과정 필요
+    def run_tsne(self, color_by, color_map=None, title=None):
+        """_summary_
+            Run tSNE and plot the results with specified labels and colors.
+
+            Args:
+                color_by (str): the column name in adata.obs. the standard to color in the plot
+                color_map (dict or str, optiional): color pallette, or dictionary of color mapping. 
+                    Default: None
+        """
+        self.logger.info('Starting tSNE colored by {color_by}')
+        if title is None:
+            title = f't-SNE plot Colored by {color_by}'
         try:
             sc.tl.tsne(self.adata, n_pcs=self.n_dims)
             cmap=plt.colormaps['viridis']
             sc.pl.tsne(
                 self.adata,
-                color=label,
+                color=color_by,
                 cmap=cmap,
                 size=5,
-                title='Predicted Cell Type', # TODO: 어떻게 받아올건지
+                title=title,
                 legend_loc='right margin',
-                save='_tSNE.png' 
+                save='_{color_by}_tSNE.png' 
             )
         except Exception as e:
             self.logger.error('Error during tSNE: {}'.format(e))
@@ -281,7 +317,13 @@ class ScRNAseqPipeline:
         except Exception as e:
             self.logger.error(f'Error computing correlation between {self.gene} and {gene}: {e}')
             return (gene, np.nan, np.nan)
+    
+    def visualize_correlated_genes(self):
+        try:
+            self.logger.info(f'Process {current_process().name}: Visualize the top 30 highly correlated genes with {self.gene}')
             
+        except Exception as e:
+            self.logger.error(f'Error visualizing correlated genes: {e}')           
     def save_results(self):
         """_summary_
             Save the results of the pipeline
@@ -323,9 +365,11 @@ class ScRNAseqPipeline:
             self.clustering()
         else:
             self.logger.info('Skipping clustering step')
-        
+        self.add_gene_expression_to_obs(['AR', 'METTL3']) # TODO: 수정
         #TODO: add skip step 
-        self.run_tsne()
+        # self.run_tsne(color_by='AR_status') # TODO: 수정
+        self.run_tsne(color_by='AR_METTL3_combined_status') # TODO: 수정
+        
         
         if not self.skip_visualizaton:
             self.visualize_clusters()
@@ -346,7 +390,7 @@ def init_process(log_queue):
     queue_handler = QueueHandler(log_queue)
     logger.addHandler(queue_handler)  
     
-def parse_argments():
+def parse_arguments():
     parser = argparse.ArgumentParser(description="Single cell RNA-seq pipeline")
     parser.add_argument('--data_path', type=str, required=True, help='Path to Cell Ranger output directory (filtered_feature_bc_matrix) or h5ad data format')
     parser.add_argument('--output_dir', type=str, default='results', help='Directory to save outputs')
@@ -366,7 +410,7 @@ def parse_argments():
     return parser.parse_args()
     
 def main():
-    args = parse_argments()
+    args = parse_arguments()
        
     pipeline = ScRNAseqPipeline(
         data_path=args.data_path,
