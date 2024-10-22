@@ -4,18 +4,19 @@ Proper naming of FASTQ files is essential for seamless data processing with Cell
 This guide outlines the standard naming conventions to ensure compatibility and ease of use when using tools like 'bcl-convert', 'bcl2fastq', and 'mkfastq'.
 
 ### Naming Formats
-[Sample Name]_S1_L00[Lane Number]_[Read Type]_001.fastq.gz or 
-[Sample Name]_S1_[Read Type]_001.fastq.gz
+- [Sample Name]_S1_L00[Lane Number]_[Read Type]_001.fastq.gz or 
+- [Sample Name]_S1_[Read Type]_001.fastq.gz
 
 Where Read Type is one of:
 
-I1: Sample index read1 (optional)
-I2: Sample index read2 (optional)
-R1: Read 1 (forward reads in paired-end sequencing)
-R2: Read 2 (reverse reads in paired-end sequencing)
+-  I1: Sample index read1 (optional)
+- I2: Sample index read2 (optional)
+- R1: Read 1 (forward reads in paired-end sequencing)
+- R2: Read 2 (reverse reads in paired-end sequencing)
 
-e.g. SampleA_S1_L001_R1_001.fastq.gz
-     SampleB_S1_R1_001.fastq.gz
+e.g. 
+- SampleA_S1_L001_R1_001.fastq.gz
+- SampleB_S1_R1_001.fastq.gz
 
 
 ## Sample Description
