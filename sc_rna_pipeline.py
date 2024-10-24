@@ -16,8 +16,8 @@ from logging.handlers import QueueHandler
 class ScRNAseqPipeline:
     def __init__(
         self, data_path, output_dir, gene, n_dims=4, random_state=42, skip_qc=False,
-        only_highly_variable_genes=False, skip_preprocessing=False, skip_pca=False, 
-        skip_clustering=False, skip_visualization=False, skip_annotation=False, 
+        only_highly_variable_genes=False, skip_preprocessing=False, skip_batch_correction=False,
+        skip_pca=False, skip_clustering=False, skip_visualization=False, skip_annotation=False, 
         skip_correlation=False
         ):
         self.data_path = data_path
@@ -30,6 +30,7 @@ class ScRNAseqPipeline:
         self.only_highly_variable_genes = only_highly_variable_genes
         self.skip_qc = skip_qc
         self.skip_preprocessing = skip_preprocessing
+        self.skip_batch_correction = skip_batch_correction
         self.skip_pca = skip_pca
         self.skip_clustering = skip_clustering
         self.skip_visualizaton = skip_visualization
@@ -173,6 +174,24 @@ class ScRNAseqPipeline:
             self.logger.error('Error during data preprocessing: {}'.format(e))
             sys.exit(1)
 
+    def batch_effect_correction_combat(self):
+        """_summary_
+            Perform batch effect correction using ComBat.
+        """
+        self.logger.info('Starting batch effect correction using ComBat')
+        try:
+            if 'batch' not in self.adata.obs.columns:
+                self.logger.error('Batch information not found in adata.obs')
+                sys.exit(1)
+            
+            # apply ComBat to the log1p transformed data
+            sc.pp.combat(self.adata, key='batch')
+            self.logger.info('Combat batch effect correction completed')
+            
+        except Exception as e:
+            self.logger.error(f'Error during batch effect correction: {e}')
+            sys.exit(1)
+    
     def annotate_cell_types(self):
         """_summary_
             Annotate cell types based on Celltypist
@@ -244,7 +263,7 @@ class ScRNAseqPipeline:
                 color_map (dict or str, optiional): color pallette, or dictionary of color mapping. 
                     Default: None
         """
-        self.logger.info('Starting tSNE colored by {color_by}')
+        self.logger.info(f'Starting tSNE colored by {color_by}')
         if title is None:
             title = f't-SNE plot Colored by {color_by}'
         try:
@@ -257,8 +276,9 @@ class ScRNAseqPipeline:
                 size=5,
                 title=title,
                 legend_loc='right margin',
-                save='_{color_by}_tSNE.png' 
+                save=f'_{color_by}_tSNE.png' 
             )
+            self.logger.info(f'tSNE plot saved as _{color_by}_tSNE.png')
         except Exception as e:
             self.logger.error('Error during tSNE: {}'.format(e))
             sys.exit(1)
@@ -351,6 +371,11 @@ class ScRNAseqPipeline:
         else:
             self.logger.info('Skipping preprocessing step')
         
+        if not self.skip_batch_correction:
+            self.batch_effect_correction_combat()
+        else:
+            self.logger.info('Skipping batch correction step')
+            
         if not self.skip_annotation:
             self.annotate_cell_types()
         else:
@@ -367,9 +392,9 @@ class ScRNAseqPipeline:
             self.logger.info('Skipping clustering step')
         self.add_gene_expression_to_obs(['AR', 'METTL3']) # TODO: 수정
         #TODO: add skip step 
-        # self.run_tsne(color_by='AR_status') # TODO: 수정
+        self.run_tsne(color_by='AR_status') # TODO: 수정
         self.run_tsne(color_by='AR_METTL3_combined_status') # TODO: 수정
-        
+        # self.run_tsne(color_by='predicted_celltype')
         
         if not self.skip_visualizaton:
             self.visualize_clusters()
@@ -401,6 +426,7 @@ def parse_arguments():
     parser.add_argument('--only_highly_variable_genes', action='store_true', help='Using only highly variable genes in all analysis steps')
     parser.add_argument('--skip_qc', action='store_true', help='Skip the quality control step')
     parser.add_argument('--skip_preprocessing', action='store_true', help='Skip the preprocessing step')
+    parser.add_argument('--skip_batch_correction', action='store_true', help='Skip the batch correction step')
     parser.add_argument('--skip_pca', action='store_true', help='Skip the PCA step')
     parser.add_argument('--skip_clustering', action='store_true', help='Skip the clustering step')
     parser.add_argument('--skip_visualization', action='store_true', help='Skip the visualization step')
@@ -421,6 +447,7 @@ def main():
         only_highly_variable_genes=args.only_highly_variable_genes,
         skip_qc=args.skip_qc,
         skip_preprocessing=args.skip_preprocessing,
+        skip_batch_correction=args.skip_batch_correction,
         skip_pca=args.skip_pca,
         skip_clustering=args.skip_clustering,
         skip_visualization=args.skip_visualization,
