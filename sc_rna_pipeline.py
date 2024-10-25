@@ -5,8 +5,10 @@ import argparse
 import logging
 import numpy as np
 import scanpy as sc
+import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 
 import celltypist
 from multiprocessing import current_process
@@ -53,7 +55,7 @@ class ScRNAseqPipeline:
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
         self.logger.info('Pipeline initialized')
-    
+        
     def load_data(self):
         """_summary_
             load data from data_path
@@ -87,6 +89,7 @@ class ScRNAseqPipeline:
                 hvg_mask = self.adata.var.highly_variable
                 combined_mask = tg_mask | hvg_mask 
                 self.adata = self.adata[:, combined_mask].copy()
+                
         #TODO: loaded data 출력 (cells, genes)
         except Exception as e:
             self.logger.error('Error loading data: {}'.format(e))
@@ -173,6 +176,7 @@ class ScRNAseqPipeline:
         except Exception as e:
             self.logger.error('Error during data preprocessing: {}'.format(e))
             sys.exit(1)
+            
 
     def batch_effect_correction_combat(self):
         """_summary_
@@ -308,40 +312,153 @@ class ScRNAseqPipeline:
             self.logger.error('Error during visualization of clusters: {}'.format(e))
             sys.exit(1)
     
-    def compute_correlation(self, gene, top_n=30):
+    def compute_correlation(self, top_n=30):
         """_summary_
-            Compute correlation between gene of interest and the other genes
+            Compute correlation between gene of interest and all other genes
 
             Args:
-                gene: gene compute correlation with gene of interest
+                top_n (int): Number of top correlated genes to return
+            
+            Returns:
+                List[Tuple[str, float, float]]: List of tuples 
+                    containing gene name, correlation coefficients, and p-value
         """
         try: 
-            self.logger.info(f'Process {current_process().name}: Computing correlation between {self.gene} and {gene}')
-            if self.only_highly_variable_genes:
-                tg_mask = self.adata.var_names.isin(self.gene)
-                hvg_mask = self.adata.var.highly_variable
-                combined_mask = tg_mask | hvg_mask 
-                self.adata = self.adata[:, combined_mask].copy()
+            self.logger.info(f'Process {current_process().name}: Computing correlation between {self.gene} and all other genes')
+            if self.gene not in self.adata.var_names:
+                self.logger.error(f"Gene {self.gene} not found in the dataset.")
+                sys.exit(1)
+                
             gene_exp = self.adata[:, self.gene].X.toarray().flatten()
             all_genes = self.adata.var_names
+            
             correlations = []
             for gene in all_genes:
                 gene_data = self.adata[:, gene].X.toarray().flatten()
                 corr, p_value = pearsonr(gene_exp, gene_data)
-                correlations.append(gene, corr, p_value)
+                correlations.append((gene, corr, p_value))
                 print(f'{gene}: corr={corr}, p-value={p_value}')
             significant_genes = [item for item in correlations if item[2] < 0.05]
             top_genes = sorted(significant_genes, key=lambda x: -abs(x[1]))[:top_n]
+            self.logger.info(f'Top {top_n} correlated genes computed.')
             return top_genes
         
         except Exception as e:
-            self.logger.error(f'Error computing correlation between {self.gene} and {gene}: {e}')
-            return (gene, np.nan, np.nan)
+            self.logger.error(f'Error computing correlation: {e}')
+            sys.exit(1)
     
-    def visualize_correlated_genes(self):
+    def _plot_dotplot(self, percentage_expr, average_expr, genes, cell_types):
+        """_summary_
+            Plot a dot plot of percentage expression and average expression
+
+        Args:
+            percentage_expr (pd.DataFrame): DataFrame of percentage expression.
+            average_expr (pd.DataFrame): DataFrame of average expression.
+            genes (List[str]): List of gene names.
+            cell_types (List[str]): List of cell types. 
+        """
         try:
-            self.logger.info(f'Process {current_process().name}: Visualize the top 30 highly correlated genes with {self.gene}')
+            sns.set(style='whitegrid')
+            # data transformation
+            percentage_expr = percentage_expr.astype(float)
+            average_expr = average_expr.astype(float)
+            # set graph size
+            fig, ax = plt.subplots(figsize=(len(cell_types) * 1.2, len(genes) * 0.8))
+            # color
+            norm = plt.Normalize(vmin=average_expr.values.min(), vmax=average_expr.values.max())
+
+            min_size = 300
+            max_size = 3000
+
+            pct_values = percentage_expr.values.flatten()
+            pct_min = pct_values.min()
+            pct_max = pct_values.max()
+
+            if pct_max == pct_min:
+                pct_max += 1
+            x_positions = np.arange(len(cell_types))
+            y_positions = np.arange(len(genes))
+
+            for i, gene in enumerate(genes):
+                for j, cell_type in enumerate(cell_types):
+                    pct = percentage_expr.loc[gene, cell_type]
+                    size = min_size + ((pct - pct_min) / (pct_max - pct_min)) * (max_size - min_size)
+                    color = average_expr.loc[gene, cell_type]
+                    ax.scatter(x_positions[j], y_positions[i], s=size, c=[color], cmap='Reds', norm=norm, edgecolors='gray')
+            ax.set_xticks(x_positions)
+            ax.set_xticklabels(cell_types, rotation=90, fontsize=18)
+            ax.set_yticks(y_positions)
+            ax.set_yticklabels(genes, fontsize=18)
+
+            sm = plt.cm.ScalarMappable(cmap='Reds', norm=norm)
+            sm.set_array([])
+            cbar = plt.colorbar(sm, ax=ax)
+            cbar.set_label('Average Expression', fontsize=20)
+            ax.set_xlabel('Cell Type', fontsize=18)
+            ax.set_ylabel('Gene', fontsize=18)
+
+            legend_percentages = np.linspace(pct_min, pct_max, num=5)
+            legend_handles = []
+            for pct in legend_percentages:
+                size = min_size + ((pct - pct_min) / (pct_max - pct_min)) * (max_size - min_size)
+                handle = mlines.Line2D([], [], color='gray', marker='o', linestyle='None',
+                                       markersize=np.sqrt(size / np.pi), label=f'{pct:.1f}%')
+                legend_handles.append(handle)
+            ax.legend(handles=legend_handles, title='% of Cells Expressing', loc='upper right', bbox_to_anchor=(1.2, 1))
+
+            plt.tight_layout()
+            # plot save
+            plot_filename = os.path.join(self.output_dir, f'{self.gene}_correlated_genes_dotplot.png')
+            plt.savefig(plot_filename)
+            plt.close(fig)
+            self.logger.info(f'Correlation dot plot saved as {plot_filename}')
+        except Exception as e:
+            self.logger.error(f'Error generating dot plot: {e}')
+            sys.exit(1)
+        
+    
+    def visualize_correlated_genes(self, top_n=30):
+        try:
+            self.logger.info(f'Process {current_process().name}: Visualize the top {top_n} highly correlated genes with {self.gene}')
             
+            top_genes = self.compute_correlation(top_n=top_n)
+            if not top_genes:
+                self.logger.warning('No significant correlated genes found.')
+                return
+            
+            top_gene_names = [item[0] for item in top_genes]
+            
+            if 'cell_type' in self.adata.obs.columns:
+                cell_type_col = 'cell_type'
+            elif 'predicted_celltype' in self.adata.obs.columns:
+                cell_type_col = 'predicted_celltype'
+            else:
+                self.logger.error('Cell type annotations not found in adata.obs')
+                sys.exit(1)
+                
+            cell_types = self.adata.obs[cell_type_col].unique()
+            
+            percentage_expr = pd.DataFrame(index=top_gene_names, columns=cell_types)
+            average_expr = pd.DataFrame(index=top_gene_names, columns=cell_types)
+            
+            for gene in top_gene_names:
+                for cell_type in cell_types:
+                    cell_indices = self.adata.obs[cell_type_col] == cell_type
+                    expr_values = self.adata[cell_indices, gene].X.toarray().flatten()
+                    # 발현된 세포의 비율 계산
+                    pct = np.sum(expr_values > 0) / len(expr_values) * 100
+                    percentage_expr.loc[gene, cell_type] = pct
+                    # 발현된 세포들 중 평균 발현량 계산
+                    if np.sum(expr_values > 0) > 0:
+                        avg = np.mean(expr_values[expr_values > 0])
+                    else:
+                        avg = 0
+                    average_expr.loc[gene, cell_type] = avg
+            print(average_expr)
+            # 도트 플롯 생성
+            self._plot_dotplot(percentage_expr, average_expr, top_gene_names, cell_types)
+
+
         except Exception as e:
             self.logger.error(f'Error visualizing correlated genes: {e}')           
     def save_results(self):
@@ -390,11 +507,13 @@ class ScRNAseqPipeline:
             self.clustering()
         else:
             self.logger.info('Skipping clustering step')
-        self.add_gene_expression_to_obs(['AR', 'METTL3']) # TODO: 수정
+        # self.add_gene_expression_to_obs(['AR', 'METTL3']) # TODO: 수정
         #TODO: add skip step 
-        self.run_tsne(color_by='AR_status') # TODO: 수정
-        self.run_tsne(color_by='AR_METTL3_combined_status') # TODO: 수정
+        # self.run_tsne(color_by='AR_status') # TODO: 수정
+        # self.run_tsne(color_by='AR_METTL3_combined_status') # TODO: 수정
         # self.run_tsne(color_by='predicted_celltype')
+        self.run_tsne(color_by='batch')
+        
         
         if not self.skip_visualizaton:
             self.visualize_clusters()
@@ -405,6 +524,7 @@ class ScRNAseqPipeline:
             self.compute_correlation()
         else:
             self.logger.info('Skipping correlation computation step')
+        self.visualize_correlated_genes()
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
 
