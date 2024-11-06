@@ -17,14 +17,18 @@ from logging.handlers import QueueHandler
 
 class ScRNAseqPipeline:
     def __init__(
-        self, data_path, output_dir, gene, n_dims=4, random_state=42, skip_qc=False,
-        only_highly_variable_genes=False, skip_preprocessing=False, skip_batch_correction=False,
+        self, data_path, output_dir, gene, cell_types, target_gene=None, reference_gene=None, 
+        n_dims=4, random_state=42, skip_qc=False,only_highly_variable_genes=False, 
+        skip_preprocessing=False, skip_batch_correction=False,
         skip_pca=False, skip_clustering=False, skip_visualization=False, skip_annotation=False, 
         skip_correlation=False
         ):
         self.data_path = data_path
         self.output_dir = output_dir
         self.gene = gene
+        self.target_gene = target_gene
+        self.reference_gene = reference_gene
+        self.cell_types = cell_types
         self.n_dims = n_dims
         self.random_state = random_state
         self.adata = None
@@ -311,42 +315,192 @@ class ScRNAseqPipeline:
         except Exception as e:
             self.logger.error('Error during visualization of clusters: {}'.format(e))
             sys.exit(1)
-    
-    def compute_correlation(self, top_n=30):
-        """_summary_
-            Compute correlation between gene of interest and all other genes
-
-            Args:
-                top_n (int): Number of top correlated genes to return
-            
-            Returns:
-                List[Tuple[str, float, float]]: List of tuples 
-                    containing gene name, correlation coefficients, and p-value
+    def compute_correlation(self, top_n=30, cell_type=None):
         """
-        try: 
-            self.logger.info(f'Process {current_process().name}: Computing correlation between {self.gene} and all other genes')
-            if self.gene not in self.adata.var_names:
-                self.logger.error(f"Gene {self.gene} not found in the dataset.")
-                sys.exit(1)
-                
-            gene_exp = self.adata[:, self.gene].X.toarray().flatten()
-            all_genes = self.adata.var_names
-            
+        Compute Pearson correlation between the target gene and all other genes.
+
+        Args:
+            top_n (int): Number of top correlated genes to return.
+            cell_type (str, optional): Specific cell type to compute correlation within. If None, use all cells.
+        Returns:
+            List[Tuple[str, float]]: List of tuples containing gene names and their correlation coefficients.
+        """
+        try:
+            if cell_type:
+                self.logger.info(f'Computing correlation for target gene {self.target_gene} within cell type {cell_type}')
+                adata = self.adata[self.adata.obs['predicted_celltype'] == cell_type]
+            else:
+                self.logger.info(f'Computing correlation for target gene {self.target_gene} across all cells')
+                adata = self.adata  # 전체 셀 사용
+            if self.target_gene not in adata.var_names:
+                self.logger.error(f"Target gene {self.target_gene} not found in the dataset.")
+                return []
+            if adata.n_obs == 0:
+                self.logger.warning('No cells found for the specified cell type.')
+                return []
+            target_exp = adata[:, self.target_gene].X.toarray().flatten()
             correlations = []
-            for gene in all_genes:
-                gene_data = self.adata[:, gene].X.toarray().flatten()
-                corr, p_value = pearsonr(gene_exp, gene_data)
-                correlations.append((gene, corr, p_value))
-                print(f'{gene}: corr={corr}, p-value={p_value}')
-            significant_genes = [item for item in correlations if item[2] < 0.05]
-            top_genes = sorted(significant_genes, key=lambda x: -abs(x[1]))[:top_n]
-            self.logger.info(f'Top {top_n} correlated genes computed.')
+            for gene in adata.var_names:
+                gene_exp = adata[:, gene].X.toarray().flatten()
+                if np.std(gene_exp) == 0 or np.std(target_exp) == 0:
+                    continue
+                corr, p_val = pearsonr(target_exp, gene_exp)
+                if not np.isnan(corr) and p_val < 0.05:
+                    correlations.append((gene, corr))
+            if not correlations:
+                self.logger.warning('No significant correlated genes found.')
+                return []
+            # 절대 상관계수 기준으로 정렬 후 상위 top_n 유전자 선택
+            top_genes = sorted(correlations, key=lambda x: -abs(x[1]))[:top_n]
+            self.logger.info(f'Top {top_n} correlated genes: {top_genes}')
             return top_genes
-        
         except Exception as e:
             self.logger.error(f'Error computing correlation: {e}')
             sys.exit(1)
-    
+            
+    def compute_correlation_per_cell_type(self, top_n=30):
+        """Compute Pearson correlation between the target gene and all other genes within each specified cell type.
+
+        Args:
+            top_n (int): Number of top correlated genes to return per cell type.
+
+        Returns:
+            Dict[str, List[Tuple[str, float]]]: Dictionary mapping cell types to list of tuples containing gene names and their correlation coefficients.
+        """
+        try:
+            self.logger.info(f'{self.target_gene}와의 상관관계를 각 셀 타입별로 계산합니다.')
+
+            adata = self.adata  # 고변이 유전자 포함 여부에 따른 데이터 사용
+
+            if self.target_gene not in adata.var_names:
+                self.logger.error(f"타겟 유전자 {self.target_gene}가 데이터셋에 없습니다.")
+                sys.exit(1)
+
+            # 분석할 셀 타입 목록 설정
+            if self.cell_types:
+                selected_cell_types = [ct for ct in self.cell_types if ct in adata.obs['predicted_celltype'].unique()]
+                missing_cell_types = set(self.cell_types) - set(selected_cell_types)
+                if missing_cell_types:
+                    self.logger.warning(f'다음 셀 타입은 데이터에 없으므로 제외됩니다: {missing_cell_types}')
+            else:
+                selected_cell_types = adata.obs['cell_type'].unique().tolist()
+
+            self.logger.info(f'분석할 셀 타입: {selected_cell_types}')
+
+            cell_type_gene_corr = {}  # 각 셀 타입별로 유전자와 상관계수 저장
+
+            for cell_type in selected_cell_types:
+                self.logger.info(f'셀 타입 처리 중: {cell_type}')
+                # 셀 타입 필터링
+                cell_indices = adata.obs['predicted_celltype'] == cell_type
+                subset = adata[cell_indices]
+
+                if subset.n_obs == 0:
+                    self.logger.warning(f'셀 타입 {cell_type}에 해당하는 세포가 없습니다.')
+                    continue
+
+                target_exp = subset[:, self.target_gene].X.toarray().flatten()
+
+                correlations = []
+                for gene in subset.var_names:
+                    if gene == self.target_gene:
+                        continue
+                    gene_exp = subset[:, gene].X.toarray().flatten()
+                    if np.std(gene_exp) == 0 or np.std(target_exp) == 0:
+                        continue
+                    # 발현 비율 계산
+                    expr_ratio = np.mean(gene_exp > 0)
+                    if expr_ratio < 0.1:
+                        continue  # 발현 비율이 10% 미만인 유전자는 제외
+                    corr, p_val = pearsonr(target_exp, gene_exp)
+                    if not np.isnan(corr) and p_val < 0.05:
+                        correlations.append((gene, corr))
+
+                if not correlations:
+                    self.logger.warning(f'셀 타입 {cell_type}에서 유의미한 상관된 유전자가 없습니다.')
+                    continue
+
+                # 절대 상관계수 기준으로 정렬 후 상위 top_n 유전자 선택
+                top_genes = sorted(correlations, key=lambda x: -abs(x[1]))[:top_n]
+                self.logger.info(f'셀 타입 {cell_type}의 상위 {top_n}개 상관된 유전자: {top_genes}')
+
+                cell_type_gene_corr[cell_type] = top_genes
+
+            return cell_type_gene_corr
+
+        except Exception as e:
+            self.logger.error(f'셀 타입별 상관관계 계산 중 오류 발생: {e}')
+            sys.exit(1)
+        # def compute_correlation(self, top_n=30):
+        #     """_summary_
+    #         Compute correlation between gene of interest and all other genes
+
+    #         Args:
+    #             top_n (int): Number of top correlated genes to return
+            
+    #         Returns:
+    #             List[Tuple[str, float, float]]: List of tuples 
+    #                 containing gene name, correlation coefficients, and p-value
+    #     """
+    #     try: 
+    #         self.logger.info(f'Process {current_process().name}: Computing correlation between {self.gene} and all other genes')
+    #         if self.gene not in self.adata.var_names:
+    #             self.logger.error(f"Gene {self.gene} not found in the dataset.")
+    #             sys.exit(1)
+                
+    #         gene_exp = self.adata[:, self.gene].X.toarray().flatten()
+    #         all_genes = self.adata.var_names
+            
+    #         if self.cell_types:
+    #             selected_cell_types = [ct for ct in self.cell_types if ct in self.adata.obs['predicted_celltype'].unique()]
+    #             missing_cel_types = set(self.cell_types) - set(selected_cell_types)
+    #             if missing_cel_types:
+    #                 self.logger.warning(f'The following specified cell types were not found in the data and will be ignored: {missing_cel_types}')
+    #             top_genes_set = set()
+    #             for cell_type in selected_cell_types:
+    #                 self.logger.info(f'Processing cell type: {cell_type}')
+    #                 cell_indices = self.adata.obs['predicted_celltype'] == cell_type
+    #                 subset = self.adata[cell_indices]
+    #                 if subset.n_obs == 0:
+    #                     self.logger.warning(f'No cells found for cell type: {cell_type}')
+    #                     continue
+    #                 subset_target_exp = subset[:, self.target_gene].X.toarray().flatten()
+    #                 correlations = []
+    #                 for gene in subset.var_names:
+    #                     gene_exp = subset[:, gene].X.toarray().flatten()
+    #                     if np.std(gene_exp) == 0 or np.std(subset_target_exp) == 0:
+    #                         continue
+    #                     corr, p_val = pearsonr(subset_target_exp, gene_exp)
+    #                     correlations.append((gene, corr, p_val))
+    #                 significant_genes = [item for item in correlations if item[2] < 0.05]
+    #                 if not significant_genes:
+    #                     self.logger.warning(f'No significant correlated genes found for cell type: {cell_type}')
+    #                     continue
+    #                 top_genes = sorted(significant_genes, key=lambda x: -abs(x[1]))[:top_n]
+    #                 self.logger.info(f'Top {top_n} correlated genes for cell type {cell_type}: {[gene for gene, _, _ in top_genes]}')
+    #                 for gene, _, _  in top_genes:
+    #                     top_genes_set.add(gene)
+    #                 if not top_genes_set:
+    #                     self.logger.warning('No significant correlated genes found across all specified cell types.')
+    #                     return []
+    #                 self.logger.info(f'Final list of top correlated genes across all cell types: {sorted(top_genes_set)}')
+    #                 return sorted(top_genes_set)
+    #         else:
+    #             correlations = []
+    #             for gene in all_genes:
+    #                 gene_data = self.adata[:, gene].X.toarray().flatten()
+    #                 corr, p_value = pearsonr(gene_exp, gene_data)
+    #                 correlations.append((gene, corr, p_value))
+    #                 print(f'{gene}: corr={corr}, p-value={p_value}')
+    #             significant_genes = [item for item in correlations if item[2] < 0.05]
+    #             top_genes = sorted(significant_genes, key=lambda x: -abs(x[1]))[:top_n]
+    #             self.logger.info(f'Top {top_n} correlated genes computed.')
+    #             return top_genes
+        
+    #     except Exception as e:
+    #         self.logger.error(f'Error computing correlation: {e}')
+    #         sys.exit(1)
+                
     def _plot_dotplot(self, percentage_expr, average_expr, genes, cell_types):
         """_summary_
             Plot a dot plot of percentage expression and average expression
@@ -416,51 +570,170 @@ class ScRNAseqPipeline:
             self.logger.error(f'Error generating dot plot: {e}')
             sys.exit(1)
         
-    
     def visualize_correlated_genes(self, top_n=30):
+        """Visualize the top correlated genes with the target gene across specified cell types.
+
+        Args:
+            top_n (int): Number of top correlated genes to visualize.
+        """
         try:
-            self.logger.info(f'Process {current_process().name}: Visualize the top {top_n} highly correlated genes with {self.gene}')
+            self.logger.info(f'Process {current_process().name}: Visualizing the top {top_n} highly correlated genes with {self.target_gene}')
             
             top_genes = self.compute_correlation(top_n=top_n)
             if not top_genes:
                 self.logger.warning('No significant correlated genes found.')
                 return
             
-            top_gene_names = [item[0] for item in top_genes]
+            # 유전자 이름과 상관계수를 분리
+            top_gene_names = [gene for gene, _ in top_genes]
+            gene_correlations = {gene: corr for gene, corr in top_genes}
             
-            if 'cell_type' in self.adata.obs.columns:
-                cell_type_col = 'cell_type'
-            elif 'predicted_celltype' in self.adata.obs.columns:
-                cell_type_col = 'predicted_celltype'
+            # 분석할 셀타입 목록을 설정
+            if self.cell_types:
+                selected_cell_types = [ct for ct in self.cell_types if ct in self.adata.obs['predicted_celltype'].unique()]
+                missing_cell_types = set(self.cell_types) - set(selected_cell_types)
+                if missing_cell_types:
+                    self.logger.warning(f'The following specified cell types were not found in the data and will be ignored: {missing_cell_types}')
             else:
-                self.logger.error('Cell type annotations not found in adata.obs')
-                sys.exit(1)
-                
-            cell_types = self.adata.obs[cell_type_col].unique()
+                selected_cell_types = self.adata.obs['predicted_celltype'].unique().tolist()
             
-            percentage_expr = pd.DataFrame(index=top_gene_names, columns=cell_types)
-            average_expr = pd.DataFrame(index=top_gene_names, columns=cell_types)
+            self.logger.info(f'Analyzing the following cell types: {selected_cell_types}')
             
-            for gene in top_gene_names:
-                for cell_type in cell_types:
-                    cell_indices = self.adata.obs[cell_type_col] == cell_type
-                    expr_values = self.adata[cell_indices, gene].X.toarray().flatten()
-                    # 발현된 세포의 비율 계산
-                    pct = np.sum(expr_values > 0) / len(expr_values) * 100
-                    percentage_expr.loc[gene, cell_type] = pct
-                    # 발현된 세포들 중 평균 발현량 계산
-                    if np.sum(expr_values > 0) > 0:
-                        avg = np.mean(expr_values[expr_values > 0])
-                    else:
-                        avg = 0
-                    average_expr.loc[gene, cell_type] = avg
-            print(average_expr)
-            # 도트 플롯 생성
-            self._plot_dotplot(percentage_expr, average_expr, top_gene_names, cell_types)
+            # 선택한 셀타입의 데이터를 필터링합니다.
+            adata_filtered = self.adata[self.adata.obs['predicted_celltype'].isin(selected_cell_types)]
+            
+            # 도트 플롯 저장 경로 설정
+            plot_filename = f'{self.target_gene}_correlated_genes_dotplot.png'
+            sc.settings.figdir = self.output_dir  # 결과 저장 디렉토리 설정
+            
+            # 도트 플롯 생성 및 저장
+            sc.pl.dotplot(
+                adata_filtered,
+                var_names=top_gene_names,
+                groupby='predicted_celltype',
+                standard_scale='var',  # 각 유전자를 0에서 1로 정규화
+                var_group_labels=[''] * len(top_gene_names),  # 그룹 레이블 제거
+                var_group_positions=[(i, i) for i in range(len(top_gene_names))],  # 각 유전자를 개별 그룹으로 처리
+                swap_axes=True,  # 축 교환 (유전자가 y축)
+                dendrogram=False,
+                save=f'_{plot_filename}',
+                show=False
+            )
+            self.logger.info(f'Correlation dot plot saved as {plot_filename}')
+        
+        except Exception as e:
+            self.logger.error(f'Error visualizing correlated genes: {e}')
+            sys.exit(1)
+            
+    def visualize_correlated_genes_combined(self, top_n=30):
+  
+        """Visualize the top correlated genes with the target gene for each cell type,
+        including all selected cell types in the plot.
 
+        Args:
+            top_n (int): Number of top correlated genes to visualize per cell type.
+        """
+        try:
+            self.logger.info(f'Visualizing the top {top_n} correlated genes with {self.target_gene} for each cell type, including all selected cell types')
+
+            cell_type_gene_corr = self.compute_correlation_per_cell_type(top_n=top_n)
+
+            if not cell_type_gene_corr:
+                self.logger.warning('No significant correlated genes found for any cell type.')
+                return
+
+            # 선택한 셀 타입의 데이터만 필터링
+            if self.cell_types:
+                adata_filtered = self.adata[self.adata.obs['predicted_celltype'].isin(self.cell_types)]
+            else:
+                adata_filtered = self.adata
+
+            for cell_type, gene_corr_list in cell_type_gene_corr.items():
+                if not gene_corr_list:
+                    continue
+
+                # 유전자 이름 추출
+                top_gene_names = [gene for gene, _ in gene_corr_list]
+
+                # 유전자 목록을 30개씩 나누기
+                gene_chunks = [top_gene_names[i:i + 30] for i in range(0, len(top_gene_names), 30)]
+
+                for idx, gene_chunk in enumerate(gene_chunks):
+                    # 도트 플롯 저장 경로 설정
+                    plot_filename = f'{self.target_gene}_correlated_genes_dotplot_{cell_type}_part{idx+1}.png'
+                    sc.settings.figdir = self.output_dir  # 결과 저장 디렉토리 설정
+
+                    # 도트 플롯 생성 및 저장
+                    sc.pl.dotplot(
+                        adata_filtered,
+                        var_names=gene_chunk,
+                        groupby='predicted_celltype',
+                        standard_scale='var',  # 각 유전자를 0에서 1로 정규화
+                        swap_axes=True,
+                        dendrogram=False,
+                        show=False,
+                        save=f'_{plot_filename}'
+                    )
+                    self.logger.info(f'Correlation dot plot for genes from cell type {cell_type} part {idx+1} saved as {plot_filename}')
 
         except Exception as e:
-            self.logger.error(f'Error visualizing correlated genes: {e}')           
+            self.logger.error(f'Error visualizing correlated genes per cell type combined: {e}')
+            sys.exit(1)
+    # def visualize_correlated_genes(self, top_n=30):
+    #     try:
+    #         self.logger.info(f'Process {current_process().name}: Visualize the top {top_n} highly correlated genes with {self.gene}')
+            
+    #         top_genes = self.compute_correlation(top_n=top_n)
+    #         if not top_genes:
+    #             self.logger.warning('No significant correlated genes found.')
+    #             return
+            
+    #         if self.cell_types:
+    #             top_gene_names = top_genes
+    #         else:
+    #             top_gene_names = [item[0] for item in top_genes]
+            
+    #         if 'cell_type' in self.adata.obs.columns:
+    #             cell_type_col = 'cell_type'
+    #         elif 'predicted_celltype' in self.adata.obs.columns:
+    #             cell_type_col = 'predicted_celltype'
+    #         else:
+    #             self.logger.error('Cell type annotations not found in adata.obs')
+    #             sys.exit(1)
+
+    #         if self.cell_types:
+    #             selected_cell_types = [ct for ct in self.cell_types if ct in self.adata.obs[cell_type_col].unique()]
+    #             missing_cell_types = set(self.cell_types) - set(selected_cell_types)
+    #             if missing_cell_types:
+    #                 self.logger.warning(f'The following specified cell types were not found in the data and will be ignored: {missing_cell_types}')
+    #         else:
+    #             selected_cell_types = self.adata.obs[cell_type_col].unique()
+    #         self.logger.info(f'Analyzing the following cell types: {selected_cell_types}')
+            
+    #         percentage_expr = pd.DataFrame(index=top_gene_names, columns=selected_cell_types)
+    #         average_expr = pd.DataFrame(index=top_gene_names, columns=selected_cell_types)
+            
+    #         for gene in top_gene_names:
+    #             for cell_type in selected_cell_types:
+    #                 cell_indices = self.adata.obs[cell_type_col] == cell_type
+    #                 expr_values = self.adata[cell_indices, gene].X.toarray().flatten()
+    #                 # 발현된 세포의 비율 계산
+    #                 pct = np.sum(expr_values > 0) / len(expr_values) * 100 if len(expr_values) > 0 else 0
+    #                 percentage_expr.loc[gene, cell_type] = pct
+    #                 # 발현된 세포들 중 평균 발현량 계산
+    #                 if np.sum(expr_values > 0) > 0:
+    #                     avg = np.mean(expr_values[expr_values > 0])
+    #                 else:
+    #                     avg = 0
+    #                 average_expr.loc[gene, cell_type] = avg
+    #         self.logger.info('Expression percentage and average expression calculated for dot plot.')
+    #         # 도트 플롯 생성
+    #         self._plot_dotplot(percentage_expr, average_expr, top_gene_names, selected_cell_types)
+
+
+    #     except Exception as e:
+    #         self.logger.error(f'Error visualizing correlated genes: {e}')  
+             
     def save_results(self):
         """_summary_
             Save the results of the pipeline
@@ -507,13 +780,14 @@ class ScRNAseqPipeline:
             self.clustering()
         else:
             self.logger.info('Skipping clustering step')
-        # self.add_gene_expression_to_obs(['AR', 'METTL3']) # TODO: 수정
+        self.add_gene_expression_to_obs(['AR', 'METTL3']) # TODO: 수정
         #TODO: add skip step 
-        # self.run_tsne(color_by='AR_status') # TODO: 수정
+        self.run_tsne(color_by='METTL3_status') # TODO: 수정
         # self.run_tsne(color_by='AR_METTL3_combined_status') # TODO: 수정
         # self.run_tsne(color_by='predicted_celltype')
-        self.run_tsne(color_by='batch')
-        
+        # self.run_tsne(color_by='batch')
+        # self.run_tsne(color_by='total_counts')
+
         
         if not self.skip_visualizaton:
             self.visualize_clusters()
@@ -524,7 +798,10 @@ class ScRNAseqPipeline:
             self.compute_correlation()
         else:
             self.logger.info('Skipping correlation computation step')
-        self.visualize_correlated_genes()
+        if not self.cell_types:
+            self.visualize_correlated_genes()
+        else:
+            self.visualize_correlated_genes_combined()
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
 
@@ -540,6 +817,9 @@ def parse_arguments():
     parser.add_argument('--data_path', type=str, required=True, help='Path to Cell Ranger output directory (filtered_feature_bc_matrix) or h5ad data format')
     parser.add_argument('--output_dir', type=str, default='results', help='Directory to save outputs')
     parser.add_argument('--gene', type=str, help='Gene of interest to compute correlation')
+    parser.add_argument('--target_gene', type=str, help='Target gene of interest')
+    parser.add_argument('--reference_gene', type=str, help='Reference gene to compare with')
+    parser.add_argument('--cell_types', type=str, nargs='*', help='List of cell types to analyze (e.g., T_cells B_cells)')
     parser.add_argument('--n_dims', type=int, default=4, help='Number of principal components to use')
     parser.add_argument('--random_state', type=int, default=42, help='Random state for reproducibility')
     
@@ -562,6 +842,8 @@ def main():
         data_path=args.data_path,
         output_dir=args.output_dir,
         gene=args.gene,
+        target_gene=args.target_gene,
+        cell_types=args.cell_types,
         n_dims=args.n_dims,
         random_state=args.random_state,
         only_highly_variable_genes=args.only_highly_variable_genes,
