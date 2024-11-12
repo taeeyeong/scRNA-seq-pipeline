@@ -107,7 +107,7 @@ class ScRNAseqPipeline:
         self.logger.info('Starting quality control')
         try:
             # Mitochondrial gene ratio
-            self.adata.var['mt'] = self.adata.var_names.str.startswith('MT-')
+            self.adata.var['mt'] = self.adata.var_names.str.startswith('MT-') | self.adata.var_names.str.startswith('mt-')
             sc.pp.calculate_qc_metrics(
                 self.adata, qc_vars=['mt'], percent_top=None, log1p=False, inplace=True
             )
