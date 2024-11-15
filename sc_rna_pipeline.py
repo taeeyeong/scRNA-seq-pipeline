@@ -17,13 +17,13 @@ from logging.handlers import QueueHandler
 
 class ScRNAseqPipeline:
     def __init__(
-        self, data_path, output_dir, gene, cell_types, target_gene=None, reference_gene=None, 
+        self, data_paths, output_dir, gene, cell_types, target_gene=None, reference_gene=None, 
         n_dims=4, random_state=42, skip_qc=False,only_highly_variable_genes=False, 
         skip_preprocessing=False, skip_batch_correction=False,
         skip_pca=False, skip_clustering=False, skip_visualization=False, skip_annotation=False, 
         skip_correlation=False
         ):
-        self.data_path = data_path
+        self.data_paths = data_paths
         self.output_dir = output_dir
         self.gene = gene
         self.target_gene = target_gene
@@ -62,37 +62,55 @@ class ScRNAseqPipeline:
         
     def load_data(self):
         """_summary_
-            load data from data_path
+            load data from data_paths
             support files format: mtx, h5ad
         """
         try:
-            self.logger.info('Loading data from {}'.format(self.data_path))
+            self.logger.info('Loading data from provided paths')
+            adata_list = []
+            for idx, data_path in enumerate(self.data_paths):
+                self.logger.info('Loading data from {}'.format(data_path))
             
-            if os.path.isdir(self.data_path):
-                self.file_type = '10x_mtx'
-            elif self.data_path.endswith('.h5ad'):
-                self.file_type = 'h5ad'
-            else:
-                self.logger.error('Unsupported data format')
+                if os.path.isdir(data_path):
+                    file_type = '10x_mtx'
+                elif data_path.endswith('.h5ad'):
+                    file_type = 'h5ad'
+                else:
+                    self.logger.error(f'Unsupported data format for {data_path}')
+                    sys.exit(1)
+            
+                if file_type == '10x_mtx':
+                    adata = sc.read_10x_mtx(
+                        data_path,
+                        var_names='gene_symbols',
+                        cache=True
+                    )
+                elif file_type == 'h5ad':
+                    adata = sc.read(data_path)
+                else:
+                    self.logger.error(f'Unsupported data format for {data_path}')
+                    sys.exit(1)
+                if adata is None:
+                    self.logger.error(f'Failed to load data from {data_path}')
+                    continue
+                if adata.n_obs == 0:
+                    self.logger.warning(f'Dataset loaded from {data_path} is empty (no cells)')
+                    continue
+                batch_name = str(idx)
+                adata.obs['batch'] = batch_name
+                adata_list.append(adata)
+                self.logger.info(f'Dataset {idx} loaded with batch name {batch_name}')
+            if not adata_list:
+                self.logger.error('No datasets loaded successfully. Exiting pipeline.')
                 sys.exit(1)
+            self.logger.info('All datasets loaded successfully')
+            self.adata_list = adata_list
             
-            if self.file_type == '10x_mtx':
-                self.adata = sc.read_10x_mtx(
-                    self.data_path,
-                    var_names='gene_symbols',
-                    cache=True
-                )
-            elif self.file_type == 'h5ad':
-                self.adata = sc.read(self.data_path)
-            else:
-                self.logger.error('Unsupported data format')
-                sys.exit(1)
-            
-            if self.only_highly_variable_genes:
-                tg_mask = self.adata.var_names.isin([self.gene])
-                hvg_mask = self.adata.var.highly_variable
-                combined_mask = tg_mask | hvg_mask 
-                self.adata = self.adata[:, combined_mask].copy()
+            # if self.only_highly_variable_genes:
+            #     tg_mask = self.adata.var_names.isin([self.gene])
+            #     hvg_mask = self.adata.var.highly_variable
+            #     combined_mask = tg_mask | hvg_mask 
+            #     self.adata = self.adata[:, combined_mask].copy()
                 
         #TODO: loaded data 출력 (cells, genes)
         except Exception as e:
@@ -106,59 +124,103 @@ class ScRNAseqPipeline:
         """
         self.logger.info('Starting quality control')
         try:
-            # Mitochondrial gene ratio
-            self.adata.var['mt'] = self.adata.var_names.str.startswith('MT-') | self.adata.var_names.str.startswith('mt-')
-            sc.pp.calculate_qc_metrics(
-                self.adata, qc_vars=['mt'], percent_top=None, log1p=False, inplace=True
-            )
-            # visualize quality control metrics
-            sc.pl.violin(
-                self.adata, 
-                ['n_genes_by_counts', 'total_counts', 'pct_counts_mt'], 
-                jitter=0.4, 
-                multi_panel=True, 
-                save='_qc_violin.png'
-            )
-            # visualize n_genes_by_counts distribution
-            sns.histplot(self.adata.obs['n_genes_by_counts'], bins=50)
-            plt.xlabel('n_genes_by_counts')
-            plt.ylabel('Number of cells')
-            plt.title('Distribution of n_genes_by_counts')
-            plt.savefig(os.path.join(self.output_dir, 'n_genes_by_counts_distribution.png'))
-            plt.close()
-            
-            # lowest threshold for number of genes and counts
-            X = np.percentile(self.adata.obs['n_genes_by_counts'], 5) # lower threshold: 5%
-            Y = np.percentile(self.adata.obs['total_counts'], 99) # upper threshold: 1%
-            
-            self.logger.info(f"Calculated lower threshold (X): {X}")
-            self.logger.info(f"Calculated upper threshold (Y): {Y}")
-            
-            # visualize pct_counts_mt distribution
-            sns.histplot(self.adata.obs['pct_counts_mt'], bins=50)
-            plt.xlabel('pct_counts_mt')
-            plt.ylabel('Number of cells')
-            plt.title('Distribution of pct_counts_mt')
-            plt.savefig(os.path.join(self.output_dir, 'pct_counts_mt_distribution.png'))
-            plt.close()
-            
-            Z = np.percentile(self.adata.obs['pct_counts_mt'], 90) # upper threshold: 90%
-            self.logger.info(f"Calculated upper threshold for pct_counts_mt (Z): {Z}")
-            
-            # Filtering
-            initial_cell_count = self.adata.n_obs
-            self.adata = self.adata[self.adata.obs.n_genes_by_counts > X, :]
-            self.adata = self.adata[self.adata.obs.total_counts < Y, :]
-            self.adata = self.adata[self.adata.obs.pct_counts_mt < Z, :]
-            filtered_cell_count = self.adata.n_obs
-            
-            self.logger.info(f"Cells before QC: {initial_cell_count}")
-            self.logger.info(f"Cells after QC: {filtered_cell_count}")
-            self.logger.info('Quliaity control completed')
+            qc_adata_list = []
+            for adata in self.adata_list:
+                adata = adata.copy()
+                adata.var['mt'] = adata.var_names.str.startswith('MT-') | adata.var_names.str.startswith('mt-')
+                if 'batch' in adata.obs.columns:
+                    batch_name = adata.obs['batch'].unique()[0]
+                else:
+                    batch_name = 'unknown_batch'
+                # Mitochondrial gene ratio
+                sc.pp.calculate_qc_metrics(
+                    adata, qc_vars=['mt'], percent_top=None, log1p=False, inplace=True
+                )
+                # visualize quality control metrics
+                sc.pl.violin(
+                    adata, 
+                    ['n_genes_by_counts', 'total_counts', 'pct_counts_mt'], 
+                    jitter=0.4, 
+                    multi_panel=True, 
+                    save=f'{batch_name}_qc_violin.png'
+                )
+                # visualize n_genes_by_counts distribution
+                sns.histplot(adata.obs['n_genes_by_counts'], bins=50)
+                plt.xlabel('n_genes_by_counts')
+                plt.ylabel('Number of cells')
+                plt.title('Distribution of n_genes_by_counts')
+                plt.savefig(os.path.join(self.output_dir, f"{batch_name}_n_genes_by_counts_distribution.png"))
+                plt.close()
+
+                # lowest threshold for number of genes and counts
+                X = np.percentile(adata.obs['n_genes_by_counts'], 5) # lower threshold: 5%
+                Y = np.percentile(adata.obs['total_counts'], 99) # upper threshold: 1%
+
+                self.logger.info(f"Calculated lower threshold (X): {X}")
+                self.logger.info(f"Calculated upper threshold (Y): {Y}")
+
+                # visualize pct_counts_mt distribution
+                sns.histplot(adata.obs['pct_counts_mt'], bins=50)
+                plt.xlabel('pct_counts_mt')
+                plt.ylabel('Number of cells')
+                plt.title('Distribution of pct_counts_mt')
+                plt.savefig(os.path.join(self.output_dir, f"{batch_name}_pct_counts_mt_distribution.png"))
+                plt.close()
+
+                Z = np.percentile(adata.obs['pct_counts_mt'], 90) # upper threshold: 90%
+                self.logger.info(f"Calculated upper threshold for pct_counts_mt (Z): {Z}")
+
+                # Filtering
+                initial_cell_count = adata.n_obs
+                adata = adata[adata.obs.n_genes_by_counts > X, :]
+                adata = adata[adata.obs.total_counts < Y, :]
+                adata = adata[adata.obs.pct_counts_mt < Z, :]
+                qc_adata_list.append(adata)
+                filtered_cell_count = adata.n_obs
+
+                self.logger.info(f"Cells before QC: {initial_cell_count}")
+                self.logger.info(f"Cells after QC: {filtered_cell_count}")
+                self.logger.info(f"Quality control completed for batch {batch_name}")
+            self.adata_list = qc_adata_list
         except Exception as e:
             self.logger.error('Error during quality control: {}'.format(e))
             sys.exit(1)
     
+    def integrate_data(self):
+        """_summary_
+            Integrate the QCed datasets.
+        """
+        self.logger.info('Starting data integration')
+        try:
+            all_var_names = [set(adata.var_names) for adata in self.adata_list]
+            total_vars = set.union(*all_var_names)
+            total_var_count = len(total_vars)
+            self.logger.info(f'Total number of unique genes across all datasets: {total_var_count}')
+            
+            common_var_names = set.intersection(*all_var_names)
+            common_var_count = len(common_var_names)
+            self.logger.info(f'Number of common genes: {common_var_count}')
+            
+            excluded_var_count = total_var_count - common_var_count
+            self.logger.info(f'Total number of excluded genes due to mismatched names: {excluded_var_count}')
+            
+            for i, adata in enumerate(self.adata_list):
+                original_var_count = adata.n_vars
+                adata = adata[:, list(common_var_names)]
+                new_var_count = adata.n_vars
+                excluded_vars = original_var_count - new_var_count
+                batch_name = adata.obs['batch'][0] if 'batch' in adata.obs.columns else f'Dataset_{i}'
+                self.logger.info(f'Dataset {i} ({batch_name}): Excluded {excluded_vars} genes due to mismatched names')
+                self.adata_list[i] = adata
+            self.adata = self.adata_list[0].concatenate(*self.adata_list[1:], batch_key='batch')
+            self.logger.info('Data integration completed')
+            output_file = os.path.join(self.output_dir, 'integrated_data.h5ad')
+            self.adata.write(output_file)
+            self.logger.info(f'Integrated data saved to {output_file}')
+        except Exception as e:
+            self.logger.error('Error during data integration: {}'.format(e))
+            sys.exit(1)
+        
     def preprocess_data(self):
         """_summary_
             Normalization and scaling of the data
@@ -755,7 +817,11 @@ class ScRNAseqPipeline:
             self.quality_control()
         else:
             self.logger.info('Skipping quality control step')
-            
+        if len(self.adata_list) > 1:
+            self.integrate_data()
+        else:
+            self.logger.info('Only one dataset found adter QC; skipping data integration step')
+            self.adata = self.adata_list[0]
         if not self.skip_preprocessing:
             self.preprocess_data()
         else:
@@ -780,13 +846,14 @@ class ScRNAseqPipeline:
             self.clustering()
         else:
             self.logger.info('Skipping clustering step')
-        self.add_gene_expression_to_obs(['AR', 'METTL3']) # TODO: 수정
+        # self.add_gene_expression_to_obs(['AR', 'METTL3']) # TODO: 수정
         #TODO: add skip step 
-        self.run_tsne(color_by='METTL3_status') # TODO: 수정
+        # self.run_tsne(color_by='METTL3_status') # TODO: 수정
         # self.run_tsne(color_by='AR_METTL3_combined_status') # TODO: 수정
         # self.run_tsne(color_by='predicted_celltype')
         # self.run_tsne(color_by='batch')
         # self.run_tsne(color_by='total_counts')
+        print(self.adata.obs.head())
 
         
         if not self.skip_visualizaton:
@@ -814,7 +881,7 @@ def init_process(log_queue):
     
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Single cell RNA-seq pipeline")
-    parser.add_argument('--data_path', type=str, required=True, help='Path to Cell Ranger output directory (filtered_feature_bc_matrix) or h5ad data format')
+    parser.add_argument('--data_paths', type=str, nargs='+', required=True, help='Path to Cell Ranger output directories (filtered_feature_bc_matrix) or h5ad data formats')
     parser.add_argument('--output_dir', type=str, default='results', help='Directory to save outputs')
     parser.add_argument('--gene', type=str, help='Gene of interest to compute correlation')
     parser.add_argument('--target_gene', type=str, help='Target gene of interest')
@@ -839,7 +906,7 @@ def main():
     args = parse_arguments()
        
     pipeline = ScRNAseqPipeline(
-        data_path=args.data_path,
+        data_paths=args.data_paths,
         output_dir=args.output_dir,
         gene=args.gene,
         target_gene=args.target_gene,
