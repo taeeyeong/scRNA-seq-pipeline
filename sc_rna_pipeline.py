@@ -18,10 +18,7 @@ from logging.handlers import QueueHandler
 class ScRNAseqPipeline:
     def __init__(
         self, data_paths, output_dir, gene, cell_types, target_gene=None, reference_gene=None, 
-        n_dims=4, random_state=42, skip_qc=False,only_highly_variable_genes=False, 
-        skip_preprocessing=False, skip_batch_correction=False,
-        skip_pca=False, skip_clustering=False, skip_visualization=False, skip_annotation=False, 
-        skip_correlation=False
+        n_dims=4, random_state=42, only_highly_variable_genes=False, steps=[]
         ):
         self.data_paths = data_paths
         self.output_dir = output_dir
@@ -34,14 +31,7 @@ class ScRNAseqPipeline:
         self.adata = None
         
         self.only_highly_variable_genes = only_highly_variable_genes
-        self.skip_qc = skip_qc
-        self.skip_preprocessing = skip_preprocessing
-        self.skip_batch_correction = skip_batch_correction
-        self.skip_pca = skip_pca
-        self.skip_clustering = skip_clustering
-        self.skip_visualizaton = skip_visualization
-        self.skip_annotation = skip_annotation
-        self.skip_correlation = skip_correlation
+        self.steps = steps
         
         self.logger = logging.getLogger('ScRNAseqPipeline')
         self.logger.setLevel(logging.INFO)
@@ -810,10 +800,10 @@ class ScRNAseqPipeline:
     # TODO: 일부 단계는 이전단계가 필요. 의존성 고려해서 사용자에게 경고 메시지 출력 | 강제로 이전 단계 실행
     def run_pipeline(self):
         """_summary_
-            Run the entire pipeline
+            Run the entire pipeline based on the steps provided by the user
         """
         self.load_data()
-        if not self.skip_qc:
+        if 'quality_control' in self.steps:
             self.quality_control()
         else:
             self.logger.info('Skipping quality control step')
@@ -822,27 +812,27 @@ class ScRNAseqPipeline:
         else:
             self.logger.info('Only one dataset found adter QC; skipping data integration step')
             self.adata = self.adata_list[0]
-        if not self.skip_preprocessing:
+        if 'preprocessing' in self.steps:
             self.preprocess_data()
         else:
             self.logger.info('Skipping preprocessing step')
         
-        if not self.skip_batch_correction:
+        if 'batch_correction' in self.steps:
             self.batch_effect_correction_combat()
         else:
             self.logger.info('Skipping batch correction step')
             
-        if not self.skip_annotation:
+        if 'annotation' in self.steps:
             self.annotate_cell_types()
         else:
             self.logger.info('Skipping cell type annotation step')
                   
-        if not self.skip_pca:
+        if 'pca' in self.steps:
             self.run_pca()
         else:
             self.logger.info('Skipping PCA step')
         
-        if not self.skip_clustering:
+        if 'clustering' in self.steps:
             self.clustering()
         else:
             self.logger.info('Skipping clustering step')
@@ -856,12 +846,12 @@ class ScRNAseqPipeline:
         print(self.adata.obs.head())
 
         
-        if not self.skip_visualizaton:
+        if 'visualization' in self.steps:
             self.visualize_clusters()
         else:
             self.logger.info('Skipping visualization step')
         
-        if not self.skip_correlation:
+        if 'correlation' in self.steps:
             self.compute_correlation()
         else:
             self.logger.info('Skipping correlation computation step')
@@ -891,13 +881,8 @@ def parse_arguments():
     parser.add_argument('--random_state', type=int, default=42, help='Random state for reproducibility')
     
     parser.add_argument('--only_highly_variable_genes', action='store_true', help='Using only highly variable genes in all analysis steps')
-    parser.add_argument('--skip_qc', action='store_true', help='Skip the quality control step')
-    parser.add_argument('--skip_preprocessing', action='store_true', help='Skip the preprocessing step')
-    parser.add_argument('--skip_batch_correction', action='store_true', help='Skip the batch correction step')
-    parser.add_argument('--skip_pca', action='store_true', help='Skip the PCA step')
-    parser.add_argument('--skip_clustering', action='store_true', help='Skip the clustering step')
-    parser.add_argument('--skip_visualization', action='store_true', help='Skip the visualization step')
-    parser.add_argument('--skip_annotation', action='store_true', help='Skip the cell type annotation step')
+    parser.add_argument('--steps', type=str, nargs='*', help='List of steps to run in the pipeline')
+    
     parser.add_argument('--skip_correlation', action='store_true', help='Skip the correlation computation step')
     
     return parser.parse_args()
@@ -914,14 +899,7 @@ def main():
         n_dims=args.n_dims,
         random_state=args.random_state,
         only_highly_variable_genes=args.only_highly_variable_genes,
-        skip_qc=args.skip_qc,
-        skip_preprocessing=args.skip_preprocessing,
-        skip_batch_correction=args.skip_batch_correction,
-        skip_pca=args.skip_pca,
-        skip_clustering=args.skip_clustering,
-        skip_visualization=args.skip_visualization,
-        skip_annotation=args.skip_annotation,
-        skip_correlation=args.skip_correlation
+        steps=args.steps,
     )
     pipeline.run_pipeline()
     
