@@ -50,6 +50,8 @@ class ScRNAseqPipeline:
         self.logger.addHandler(file_handler)
         self.logger.info('Pipeline initialized')
         
+        sc.settings.figdir = self.output_dir
+        
     def load_data(self):
         """_summary_
             load data from data_paths
@@ -86,8 +88,10 @@ class ScRNAseqPipeline:
                 if adata.n_obs == 0:
                     self.logger.warning(f'Dataset loaded from {data_path} is empty (no cells)')
                     continue
-                batch_name = str(idx)
-                adata.obs['batch'] = batch_name
+                
+                if not 'batch' in adata.obs.columns:
+                    batch_name = str(idx)
+                    adata.obs['batch'] = batch_name
                 adata_list.append(adata)
                 self.logger.info(f'Dataset {idx} loaded with batch name {batch_name}')
             if not adata_list:
@@ -102,7 +106,8 @@ class ScRNAseqPipeline:
             #     combined_mask = tg_mask | hvg_mask 
             #     self.adata = self.adata[:, combined_mask].copy()
                 
-        #TODO: loaded data 출력 (cells, genes)
+        for idx, adata in enumerate(self.adata_list):
+            self.logger.info(f'Dataset {idx} contains {adata.n_obs} cells and {adata.n_vars} genes')
         except Exception as e:
             self.logger.error('Error loading data: {}'.format(e))
             sys.exit(1)
@@ -127,13 +132,14 @@ class ScRNAseqPipeline:
                     adata, qc_vars=['mt'], percent_top=None, log1p=False, inplace=True
                 )
                 # visualize quality control metrics
-                sc.pl.violin(
-                    adata, 
-                    ['n_genes_by_counts', 'total_counts', 'pct_counts_mt'], 
-                    jitter=0.4, 
-                    multi_panel=True, 
-                    save=f'{batch_name}_qc_violin.png'
-                )
+                # sc.pl.violin(
+                #     adata, 
+                #     ['n_genes_by_counts', 'total_counts', 'pct_counts_mt'], 
+                #     jitter=0.4, 
+                #     multi_panel=True, 
+                #     save=f'{batch_name}_qc_violin.png',
+                #     show=False
+                # )
                 # visualize n_genes_by_counts distribution
                 sns.histplot(adata.obs['n_genes_by_counts'], bins=50)
                 plt.xlabel('n_genes_by_counts')
@@ -224,10 +230,7 @@ class ScRNAseqPipeline:
             
             # find highly variable genes
             sc.pp.highly_variable_genes(self.adata, n_top_genes=2000)
-            
-            # TODO: Scaling method 추가 (Celltypist 할땐 skip 해야함)
-            self.logger.info('Data preprocessing completed')
-            # Scaling
+            self.adata = self.adata[:, self.adata.var['highly_variable']].copy()
             
         except Exception as e:
             self.logger.error('Error during data preprocessing: {}'.format(e))
@@ -483,75 +486,6 @@ class ScRNAseqPipeline:
         except Exception as e:
             self.logger.error(f'셀 타입별 상관관계 계산 중 오류 발생: {e}')
             sys.exit(1)
-        # def compute_correlation(self, top_n=30):
-        #     """_summary_
-    #         Compute correlation between gene of interest and all other genes
-
-    #         Args:
-    #             top_n (int): Number of top correlated genes to return
-            
-    #         Returns:
-    #             List[Tuple[str, float, float]]: List of tuples 
-    #                 containing gene name, correlation coefficients, and p-value
-    #     """
-    #     try: 
-    #         self.logger.info(f'Process {current_process().name}: Computing correlation between {self.gene} and all other genes')
-    #         if self.gene not in self.adata.var_names:
-    #             self.logger.error(f"Gene {self.gene} not found in the dataset.")
-    #             sys.exit(1)
-                
-    #         gene_exp = self.adata[:, self.gene].X.toarray().flatten()
-    #         all_genes = self.adata.var_names
-            
-    #         if self.cell_types:
-    #             selected_cell_types = [ct for ct in self.cell_types if ct in self.adata.obs['predicted_celltype'].unique()]
-    #             missing_cel_types = set(self.cell_types) - set(selected_cell_types)
-    #             if missing_cel_types:
-    #                 self.logger.warning(f'The following specified cell types were not found in the data and will be ignored: {missing_cel_types}')
-    #             top_genes_set = set()
-    #             for cell_type in selected_cell_types:
-    #                 self.logger.info(f'Processing cell type: {cell_type}')
-    #                 cell_indices = self.adata.obs['predicted_celltype'] == cell_type
-    #                 subset = self.adata[cell_indices]
-    #                 if subset.n_obs == 0:
-    #                     self.logger.warning(f'No cells found for cell type: {cell_type}')
-    #                     continue
-    #                 subset_target_exp = subset[:, self.target_gene].X.toarray().flatten()
-    #                 correlations = []
-    #                 for gene in subset.var_names:
-    #                     gene_exp = subset[:, gene].X.toarray().flatten()
-    #                     if np.std(gene_exp) == 0 or np.std(subset_target_exp) == 0:
-    #                         continue
-    #                     corr, p_val = pearsonr(subset_target_exp, gene_exp)
-    #                     correlations.append((gene, corr, p_val))
-    #                 significant_genes = [item for item in correlations if item[2] < 0.05]
-    #                 if not significant_genes:
-    #                     self.logger.warning(f'No significant correlated genes found for cell type: {cell_type}')
-    #                     continue
-    #                 top_genes = sorted(significant_genes, key=lambda x: -abs(x[1]))[:top_n]
-    #                 self.logger.info(f'Top {top_n} correlated genes for cell type {cell_type}: {[gene for gene, _, _ in top_genes]}')
-    #                 for gene, _, _  in top_genes:
-    #                     top_genes_set.add(gene)
-    #                 if not top_genes_set:
-    #                     self.logger.warning('No significant correlated genes found across all specified cell types.')
-    #                     return []
-    #                 self.logger.info(f'Final list of top correlated genes across all cell types: {sorted(top_genes_set)}')
-    #                 return sorted(top_genes_set)
-    #         else:
-    #             correlations = []
-    #             for gene in all_genes:
-    #                 gene_data = self.adata[:, gene].X.toarray().flatten()
-    #                 corr, p_value = pearsonr(gene_exp, gene_data)
-    #                 correlations.append((gene, corr, p_value))
-    #                 print(f'{gene}: corr={corr}, p-value={p_value}')
-    #             significant_genes = [item for item in correlations if item[2] < 0.05]
-    #             top_genes = sorted(significant_genes, key=lambda x: -abs(x[1]))[:top_n]
-    #             self.logger.info(f'Top {top_n} correlated genes computed.')
-    #             return top_genes
-        
-    #     except Exception as e:
-    #         self.logger.error(f'Error computing correlation: {e}')
-    #         sys.exit(1)
                 
     def _plot_dotplot(self, percentage_expr, average_expr, genes, cell_types):
         """_summary_
@@ -731,61 +665,7 @@ class ScRNAseqPipeline:
         except Exception as e:
             self.logger.error(f'Error visualizing correlated genes per cell type combined: {e}')
             sys.exit(1)
-    # def visualize_correlated_genes(self, top_n=30):
-    #     try:
-    #         self.logger.info(f'Process {current_process().name}: Visualize the top {top_n} highly correlated genes with {self.gene}')
-            
-    #         top_genes = self.compute_correlation(top_n=top_n)
-    #         if not top_genes:
-    #             self.logger.warning('No significant correlated genes found.')
-    #             return
-            
-    #         if self.cell_types:
-    #             top_gene_names = top_genes
-    #         else:
-    #             top_gene_names = [item[0] for item in top_genes]
-            
-    #         if 'cell_type' in self.adata.obs.columns:
-    #             cell_type_col = 'cell_type'
-    #         elif 'predicted_celltype' in self.adata.obs.columns:
-    #             cell_type_col = 'predicted_celltype'
-    #         else:
-    #             self.logger.error('Cell type annotations not found in adata.obs')
-    #             sys.exit(1)
 
-    #         if self.cell_types:
-    #             selected_cell_types = [ct for ct in self.cell_types if ct in self.adata.obs[cell_type_col].unique()]
-    #             missing_cell_types = set(self.cell_types) - set(selected_cell_types)
-    #             if missing_cell_types:
-    #                 self.logger.warning(f'The following specified cell types were not found in the data and will be ignored: {missing_cell_types}')
-    #         else:
-    #             selected_cell_types = self.adata.obs[cell_type_col].unique()
-    #         self.logger.info(f'Analyzing the following cell types: {selected_cell_types}')
-            
-    #         percentage_expr = pd.DataFrame(index=top_gene_names, columns=selected_cell_types)
-    #         average_expr = pd.DataFrame(index=top_gene_names, columns=selected_cell_types)
-            
-    #         for gene in top_gene_names:
-    #             for cell_type in selected_cell_types:
-    #                 cell_indices = self.adata.obs[cell_type_col] == cell_type
-    #                 expr_values = self.adata[cell_indices, gene].X.toarray().flatten()
-    #                 # 발현된 세포의 비율 계산
-    #                 pct = np.sum(expr_values > 0) / len(expr_values) * 100 if len(expr_values) > 0 else 0
-    #                 percentage_expr.loc[gene, cell_type] = pct
-    #                 # 발현된 세포들 중 평균 발현량 계산
-    #                 if np.sum(expr_values > 0) > 0:
-    #                     avg = np.mean(expr_values[expr_values > 0])
-    #                 else:
-    #                     avg = 0
-    #                 average_expr.loc[gene, cell_type] = avg
-    #         self.logger.info('Expression percentage and average expression calculated for dot plot.')
-    #         # 도트 플롯 생성
-    #         self._plot_dotplot(percentage_expr, average_expr, top_gene_names, selected_cell_types)
-
-
-    #     except Exception as e:
-    #         self.logger.error(f'Error visualizing correlated genes: {e}')  
-             
     def save_results(self):
         """_summary_
             Save the results of the pipeline
@@ -810,13 +690,12 @@ class ScRNAseqPipeline:
         if len(self.adata_list) > 1:
             self.integrate_data()
         else:
-            self.logger.info('Only one dataset found adter QC; skipping data integration step')
+            self.logger.info('Only one dataset found after QC; skipping data integration step')
             self.adata = self.adata_list[0]
         if 'preprocessing' in self.steps:
             self.preprocess_data()
         else:
             self.logger.info('Skipping preprocessing step')
-        
         if 'batch_correction' in self.steps:
             self.batch_effect_correction_combat()
         else:
@@ -825,27 +704,24 @@ class ScRNAseqPipeline:
         if 'annotation' in self.steps:
             self.annotate_cell_types()
         else:
-            self.logger.info('Skipping cell type annotation step')
-                  
+            self.logger.info('Skipping cell type annotation step')     
         if 'pca' in self.steps:
             self.run_pca()
         else:
             self.logger.info('Skipping PCA step')
-        
         if 'clustering' in self.steps:
             self.clustering()
         else:
             self.logger.info('Skipping clustering step')
+            
         # self.add_gene_expression_to_obs(['AR', 'METTL3']) # TODO: 수정
         #TODO: add skip step 
-        # self.run_tsne(color_by='METTL3_status') # TODO: 수정
+        # self.run_tsne(color_by='Group_Biopsy') # TODO: 수정
         # self.run_tsne(color_by='AR_METTL3_combined_status') # TODO: 수정
-        # self.run_tsne(color_by='predicted_celltype')
-        # self.run_tsne(color_by='batch')
+        self.run_tsne(color_by='cell_type')
+        self.run_tsne(color_by='batch')
         # self.run_tsne(color_by='total_counts')
-        print(self.adata.obs.head())
-
-        
+          
         if 'visualization' in self.steps:
             self.visualize_clusters()
         else:
@@ -862,6 +738,7 @@ class ScRNAseqPipeline:
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
 
+#TODO: 삭제
 def init_process(log_queue):
     logger = logging.getLogger('ScRNAseqPipeline')
     logger.handlers = []
