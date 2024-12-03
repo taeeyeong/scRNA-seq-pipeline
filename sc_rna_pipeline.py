@@ -93,7 +93,7 @@ class ScRNAseqPipeline:
                     batch_name = str(idx)
                     adata.obs['batch'] = batch_name
                 adata_list.append(adata)
-                self.logger.info(f'Dataset {idx} loaded with batch name {batch_name}')
+                self.logger.info(f'Dataset {idx} loaded with batch name') # TODO: Batch name 추가
             if not adata_list:
                 self.logger.error('No datasets loaded successfully. Exiting pipeline.')
                 sys.exit(1)
@@ -106,8 +106,8 @@ class ScRNAseqPipeline:
             #     combined_mask = tg_mask | hvg_mask 
             #     self.adata = self.adata[:, combined_mask].copy()
                 
-        for idx, adata in enumerate(self.adata_list):
-            self.logger.info(f'Dataset {idx} contains {adata.n_obs} cells and {adata.n_vars} genes')
+            for idx, adata in enumerate(self.adata_list):
+                self.logger.info(f'Dataset {idx} contains {adata.n_obs} cells and {adata.n_vars} genes')
         except Exception as e:
             self.logger.error('Error loading data: {}'.format(e))
             sys.exit(1)
@@ -230,7 +230,7 @@ class ScRNAseqPipeline:
             
             # find highly variable genes
             sc.pp.highly_variable_genes(self.adata, n_top_genes=2000)
-            self.adata = self.adata[:, self.adata.var['highly_variable']].copy()
+            # self.adata = self.adata[:, self.adata.var['highly_variable']].copy()
             
         except Exception as e:
             self.logger.error('Error during data preprocessing: {}'.format(e))
@@ -383,7 +383,7 @@ class ScRNAseqPipeline:
         try:
             if cell_type:
                 self.logger.info(f'Computing correlation for target gene {self.target_gene} within cell type {cell_type}')
-                adata = self.adata[self.adata.obs['predicted_celltype'] == cell_type]
+                adata = self.adata[self.adata.obs['cell_type'] == cell_type]
             else:
                 self.logger.info(f'Computing correlation for target gene {self.target_gene} across all cells')
                 adata = self.adata  # 전체 셀 사용
@@ -433,7 +433,7 @@ class ScRNAseqPipeline:
 
             # 분석할 셀 타입 목록 설정
             if self.cell_types:
-                selected_cell_types = [ct for ct in self.cell_types if ct in adata.obs['predicted_celltype'].unique()]
+                selected_cell_types = [ct for ct in self.cell_types if ct in adata.obs['cell_type'].unique()]
                 missing_cell_types = set(self.cell_types) - set(selected_cell_types)
                 if missing_cell_types:
                     self.logger.warning(f'다음 셀 타입은 데이터에 없으므로 제외됩니다: {missing_cell_types}')
@@ -447,7 +447,7 @@ class ScRNAseqPipeline:
             for cell_type in selected_cell_types:
                 self.logger.info(f'셀 타입 처리 중: {cell_type}')
                 # 셀 타입 필터링
-                cell_indices = adata.obs['predicted_celltype'] == cell_type
+                cell_indices = adata.obs['cell_type'] == cell_type
                 subset = adata[cell_indices]
 
                 if subset.n_obs == 0:
@@ -576,17 +576,17 @@ class ScRNAseqPipeline:
             
             # 분석할 셀타입 목록을 설정
             if self.cell_types:
-                selected_cell_types = [ct for ct in self.cell_types if ct in self.adata.obs['predicted_celltype'].unique()]
+                selected_cell_types = [ct for ct in self.cell_types if ct in self.adata.obs['cell_type'].unique()]
                 missing_cell_types = set(self.cell_types) - set(selected_cell_types)
                 if missing_cell_types:
                     self.logger.warning(f'The following specified cell types were not found in the data and will be ignored: {missing_cell_types}')
             else:
-                selected_cell_types = self.adata.obs['predicted_celltype'].unique().tolist()
+                selected_cell_types = self.adata.obs['cell_type'].unique().tolist()
             
             self.logger.info(f'Analyzing the following cell types: {selected_cell_types}')
             
             # 선택한 셀타입의 데이터를 필터링합니다.
-            adata_filtered = self.adata[self.adata.obs['predicted_celltype'].isin(selected_cell_types)]
+            adata_filtered = self.adata[self.adata.obs['cell_type'].isin(selected_cell_types)]
             
             # 도트 플롯 저장 경로 설정
             plot_filename = f'{self.target_gene}_correlated_genes_dotplot.png'
@@ -596,7 +596,7 @@ class ScRNAseqPipeline:
             sc.pl.dotplot(
                 adata_filtered,
                 var_names=top_gene_names,
-                groupby='predicted_celltype',
+                groupby='cell_type',
                 standard_scale='var',  # 각 유전자를 0에서 1로 정규화
                 var_group_labels=[''] * len(top_gene_names),  # 그룹 레이블 제거
                 var_group_positions=[(i, i) for i in range(len(top_gene_names))],  # 각 유전자를 개별 그룹으로 처리
@@ -630,7 +630,7 @@ class ScRNAseqPipeline:
 
             # 선택한 셀 타입의 데이터만 필터링
             if self.cell_types:
-                adata_filtered = self.adata[self.adata.obs['predicted_celltype'].isin(self.cell_types)]
+                adata_filtered = self.adata[self.adata.obs['cell_type'].isin(self.cell_types)]
             else:
                 adata_filtered = self.adata
 
@@ -653,7 +653,7 @@ class ScRNAseqPipeline:
                     sc.pl.dotplot(
                         adata_filtered,
                         var_names=gene_chunk,
-                        groupby='predicted_celltype',
+                        groupby='cell_type',
                         standard_scale='var',  # 각 유전자를 0에서 1로 정규화
                         swap_axes=True,
                         dendrogram=False,
@@ -666,6 +666,259 @@ class ScRNAseqPipeline:
             self.logger.error(f'Error visualizing correlated genes per cell type combined: {e}')
             sys.exit(1)
 
+    def _load_gene_list(self, gene_list_file):
+        """_summary_
+            Helper method to load gene lists from a file
+
+        Args:
+            gene_list_file (str): Path to the file containing the gene list
+                Supported formats:
+                - CSV file (.csv):
+                    gene_name,group
+                    METTL3,writer
+                    METTL14,writer
+                    YTHDF1,reader
+                    ...
+                - Text file (.txt):
+                    # Writers
+                    METTL3
+                    METTL14
+                    ...
+                    # Readers
+                    YTHDF1
+                    ...
+        Returns:
+            dict: Dictionary mapping gene groups to lists of genes
+        """
+        try:
+            genes_dict = {}
+            
+            if gene_list_file.endswith('.csv'):
+                df = pd.read_csv(gene_list_file)
+                for group in df['group'].unique():
+                    genes_dict[group] = df[df['group'] == group]['gene_name'].tolist()
+            
+            elif gene_list_file.endswith('.txt'):
+                current_group = None
+                with open(gene_list_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('#'):
+                            current_group = line[1:].strip().lower()
+                            genes_dict[current_group] = []
+                        elif line and current_group:
+                            genes_dict[current_group].append(line)
+            else:
+                self.logger.error('Unsupported file format. Please use .csv or .txt files.')
+                return None
+            
+            return genes_dict
+            
+        except Exception as e:
+            self.logger.error(f'Error loading gene list: {e}')
+            return None
+        
+    def perform_differential_expression(self, group_key='Group', genes=None, gene_file=None, 
+                                 conditions=None, min_cells=3, pval_threshold=0.05):
+        """Perform differential expression analysis for specified genes between groups.
+
+        Args:
+            group_key (str): Column name in adata.obs for group comparison (default: 'Group')
+            genes (List[str], optional): List of genes to analyze. If None, uses default RNA modification genes
+            gene_file (str, optional): Path to file containing gene list
+            conditions (List[str]): Two conditions to compare [reference, comparison]
+            min_cells (int): Minimum number of cells required per group
+            pval_threshold (float): P-value threshold for significance
+
+        Returns:
+            dict: Dictionary containing DE results for each cell type
+        """
+        try:
+            self.logger.info('Starting differential expression analysis')
+            
+            # Default RNA modification-related genes
+            default_gene_list = [
+                'ALKBH8', 'BCDIN3D', 'BMT2', 'BUD23', 'CBLL1', 'CDK5RAP1', 'CDKAL1', 'CEBPZ', 'CMTR1', 'CMTR2', 
+                'DIMT1', 'EMG1', 'FBL', 'FBLL1', 'FDXACB1', 'FMR1', 'FTSJ1', 'FTSJ3', 'HENMT1', 'HSD17B10', 'LARP7', 
+                'LCMT2', 'MEPCE', 'METTL1', 'METTL14', 'METTL15', 'METTL16', 'METTL2A', 'METTL2B', 'METTL3', 'METTL4', 
+                'METTL5', 'METTL6', 'METTL7A', 'METTL7B', 'METTL8', 'MRM1', 'MRM2', 'MRM3', 'MTERF4', 'NOP2', 'NSUN2', 
+                'NSUN3', 'NSUN4', 'NSUN5', 'NSUN6', 'NSUN7', 'PCIF1', 'PRORP', 'RAMAC', 'RBM15', 'RBM15B', 'RNGTT', 'RNMT', 
+                'RRNAD1', 'RSAD1', 'SPOUT1', 'TARBP1', 'TFB1M', 'TFB2M', 'TGS1', 'THADA', 'THUMPD2', 'THUMPD3', 'TRDMT1',
+                'TRIT1', 'TRMO', 'TRMT1', 'TRMT10A', 'TRMT10B', 'TRMT10C', 'TRMT11', 'TRMT112', 'TRMT12', 'TRMT13',
+                'TRMT1L', 'TRMT2A', 'TRMT2B', 'TRMT44', 'TRMT5', 'TRMT6', 'TRMT61A', 'TRMT61B', 'TRMT9B', 'TRMU', 'TYW3', 
+                'VIRMA', 'WDR4', 'WDR6', 'WTAP', 'ZC3H13', 'ZCCHC4'
+            ]
+            
+            # Check if group column exists
+            if group_key not in self.adata.obs.columns:
+                self.logger.error(f'Group column "{group_key}" not found in data')
+                return None
+            
+            # Determine genes to analyze
+            analysis_genes = genes if genes else default_gene_list
+            if gene_file:
+                file_genes = self._load_genes_from_file(gene_file)
+                if file_genes is None:
+                    return None
+                analysis_genes = list(set(analysis_genes + file_genes))
+            
+            # Filter genes that exist in the dataset
+            available_genes = [gene for gene in analysis_genes if gene in self.adata.var_names]
+            missing_genes = set(analysis_genes) - set(available_genes)
+            
+            if missing_genes:
+                self.logger.warning(
+                    f'The following genes were not found in the dataset: {", ".join(missing_genes)}'
+                )
+            
+            if not available_genes:
+                self.logger.error('None of the specified genes were found in the dataset.')
+                return None
+                
+            self.logger.info(f'Analyzing {len(available_genes)} genes: {", ".join(available_genes)}')
+            
+            # Subset AnnData to include only the genes of interest
+            adata_subset = self.adata[:, available_genes].copy()
+            
+            de_results = {}
+            
+            # Perform DE analysis for each cell type
+            for cell_type in adata_subset.obs['cell_type'].unique():
+                self.logger.info(f'Analyzing cell type: {cell_type}')
+                
+                # Subset data for current cell type
+                cell_mask = adata_subset.obs['cell_type'] == cell_type
+                cell_adata = adata_subset[cell_mask]
+                
+                # Check minimum cell number requirement for each group
+                group_counts = cell_adata.obs[group_key].value_counts()
+                if any(group_counts[cond] < min_cells for cond in conditions):
+                    self.logger.warning(
+                        f'Skipping {cell_type} - insufficient cells in groups: '
+                        f'{dict(group_counts[conditions])}'
+                    )
+                    continue
+                
+                # Perform DE analysis
+                sc.tl.rank_genes_groups(
+                    cell_adata, 
+                    groupby=group_key,
+                    reference=conditions[0],
+                    method='wilcoxon',
+                    key_added='de_results'
+                )
+                
+                # Get results for all analyzed genes
+                de_stats = sc.get.rank_genes_groups_df(
+                    cell_adata,
+                    group=conditions[1],
+                    key='de_results'
+                )
+                
+                # Filter significant results
+                significant_de = de_stats[de_stats['pvals_adj'] < pval_threshold]
+                
+                if not significant_de.empty:
+                    de_results[cell_type] = significant_de
+                    
+                    # Visualize results
+                    self._plot_de_results(
+                        de_stats,  # Pass all results for visualization
+                        cell_type,
+                        conditions,
+                        f'de_analysis_{cell_type}_{conditions[1]}_vs_{conditions[0]}.png'
+                    )
+                    
+                    # Save results
+                    output_file = os.path.join(
+                        self.output_dir, 
+                        f'de_results_{cell_type}_{conditions[1]}_vs_{conditions[0]}.csv'
+                    )
+                    de_stats.to_csv(output_file, index=False)
+                    
+                    self.logger.info(
+                        f'Found {len(significant_de)} significantly differentially expressed genes '
+                        f'out of {len(available_genes)} analyzed genes in {cell_type}'
+                    )
+                else:
+                    self.logger.info(
+                        f'No significantly differentially expressed genes found in {cell_type} '
+                        f'among {len(available_genes)} analyzed genes'
+                    )
+            
+            return de_results
+
+
+        except Exception as e:
+            self.logger.error(f'Error performing differential expression: {e}')
+            return None
+        
+    def _plot_de_results(self, de_stats, cell_type, conditions, filename):
+        """Create volcano plot for DE results.
+        
+        Args:
+            de_stats (pd.DataFrame): DE analysis results
+            cell_type (str): Cell type being analyzed
+            conditions (List[str]): Conditions being compared [reference, comparison]
+            filename (str): Output filename
+        """
+        try:
+            # Calculate -log10(pvals_adj)
+            de_stats['neg_log10_pval'] = -np.log10(de_stats['pvals_adj'])
+            
+            # Add significance categories
+            de_stats['significance'] = 'Not Significant'
+            sig_mask = (de_stats['pvals_adj'] < 0.05) & (abs(de_stats['logfoldchanges']) > 1)
+            de_stats.loc[sig_mask, 'significance'] = 'Significant'
+            
+            # Create plot
+            plt.figure(figsize=(10, 8))
+            
+            # Create scatter plot
+            sns.scatterplot(
+                data=de_stats,
+                x='logfoldchanges',
+                y='neg_log10_pval',
+                hue='significance',
+                palette={'Significant': 'red', 'Not Significant': 'grey'},
+                alpha=0.6
+            )
+            
+            # Add threshold lines
+            plt.axhline(y=-np.log10(0.05), color='gray', linestyle='--', alpha=0.5)
+            plt.axvline(x=-1, color='gray', linestyle='--', alpha=0.5)
+            plt.axvline(x=1, color='gray', linestyle='--', alpha=0.5)
+            
+            # Label top genes
+            top_genes = de_stats[sig_mask].nlargest(10, 'neg_log10_pval')
+            for _, gene in top_genes.iterrows():
+                plt.annotate(
+                    gene['names'],
+                    xy=(gene['logfoldchanges'], gene['neg_log10_pval']),
+                    xytext=(5, 5),
+                    textcoords='offset points',
+                    fontsize=8,
+                    alpha=0.7
+                )
+            
+            # Customize plot
+            plt.title(f'Differential Expression: {cell_type}\n{conditions[1]} vs {conditions[0]}')
+            plt.xlabel('Log2 Fold Change')
+            plt.ylabel('-log10(Adjusted p-value)')
+            
+            # Add legend
+            plt.legend(title='Significance', bbox_to_anchor=(1.05, 1), loc='upper left')
+            
+            # Adjust layout and save
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.output_dir, filename), dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            self.logger.info(f'Volcano plot saved as {filename}')
+            
+        except Exception as e:
+            self.logger.error(f'Error plotting DE results: {e}')
+        
     def save_results(self):
         """_summary_
             Save the results of the pipeline
@@ -718,8 +971,8 @@ class ScRNAseqPipeline:
         #TODO: add skip step 
         # self.run_tsne(color_by='Group_Biopsy') # TODO: 수정
         # self.run_tsne(color_by='AR_METTL3_combined_status') # TODO: 수정
-        self.run_tsne(color_by='cell_type')
-        self.run_tsne(color_by='batch')
+        # self.run_tsne(color_by='cell_type')
+        # self.run_tsne(color_by='batch')
         # self.run_tsne(color_by='total_counts')
           
         if 'visualization' in self.steps:
@@ -731,10 +984,14 @@ class ScRNAseqPipeline:
             self.compute_correlation()
         else:
             self.logger.info('Skipping correlation computation step')
-        if not self.cell_types:
-            self.visualize_correlated_genes()
+        # if not self.cell_types:
+        #     self.visualize_correlated_genes()
+        # else:
+        #     self.visualize_correlated_genes_combined()
+        if 'differential_expression' in self.steps and hasattr(self, 'conditions'):
+            self.perform_differential_expression()
         else:
-            self.visualize_correlated_genes_combined()
+            self.logger.info('Skipping differential expression analysis step')
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
 
