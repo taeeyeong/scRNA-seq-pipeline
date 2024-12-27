@@ -995,6 +995,188 @@ class ScRNAseqPipeline:
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
 
+    def analyze_gene_correlations(self, target_gene='AR', cell_type='Epithelial', genes=None, gene_file=None, 
+                            min_expr=0.1, corr_threshold=0.3, pval_threshold=0.05):
+        """Analyze correlations between target gene and gene list in specific cell type.
+        
+        Args:
+            target_gene (str): Target gene to correlate against
+            cell_type (str): Specific cell type to analyze
+            genes (List[str], optional): List of genes to analyze correlations with
+            gene_file (str, optional): Path to file containing gene list
+            min_expr (float): Minimum expression threshold (fraction of cells)
+            corr_threshold (float): Minimum correlation coefficient threshold
+            pval_threshold (float): Maximum p-value threshold for significance
+            
+        Returns:
+            pd.DataFrame: Sorted correlation results
+        """
+        try:
+            self.logger.info(f'Starting correlation analysis for {target_gene} in {cell_type}')
+            
+            # Validate target gene
+            if target_gene not in self.adata.var_names:
+                self.logger.error(f'Target gene {target_gene} not found in dataset')
+                return None
+            
+            # Validate cell type
+            if cell_type not in self.adata.obs['cell_type'].unique():
+                self.logger.error(f'Cell type {cell_type} not found in dataset')
+                return None
+            
+            # Get default gene list if none provided
+            if genes is None and gene_file is None:
+                genes = [
+                'ALKBH8', 'BCDIN3D', 'BMT2', 'BUD23', 'CBLL1', 'CDK5RAP1', 'CDKAL1', 'CEBPZ', 'CMTR1', 'CMTR2', 
+                'DIMT1', 'EMG1', 'FBL', 'FBLL1', 'FDXACB1', 'FMR1', 'FTSJ1', 'FTSJ3', 'HENMT1', 'HSD17B10', 'LARP7', 
+                'LCMT2', 'MEPCE', 'METTL1', 'METTL14', 'METTL15', 'METTL16', 'METTL2A', 'METTL2B', 'METTL3', 'METTL4', 
+                'METTL5', 'METTL6', 'METTL7A', 'METTL7B', 'METTL8', 'MRM1', 'MRM2', 'MRM3', 'MTERF4', 'NOP2', 'NSUN2', 
+                'NSUN3', 'NSUN4', 'NSUN5', 'NSUN6', 'NSUN7', 'PCIF1', 'PRORP', 'RAMAC', 'RBM15', 'RBM15B', 'RNGTT', 'RNMT', 
+                'RRNAD1', 'RSAD1', 'SPOUT1', 'TARBP1', 'TFB1M', 'TFB2M', 'TGS1', 'THADA', 'THUMPD2', 'THUMPD3', 'TRDMT1',
+                'TRIT1', 'TRMO', 'TRMT1', 'TRMT10A', 'TRMT10B', 'TRMT10C', 'TRMT11', 'TRMT112', 'TRMT12', 'TRMT13',
+                'TRMT1L', 'TRMT2A', 'TRMT2B', 'TRMT44', 'TRMT5', 'TRMT6', 'TRMT61A', 'TRMT61B', 'TRMT9B', 'TRMU', 'TYW3', 
+                'VIRMA', 'WDR4', 'WDR6', 'WTAP', 'ZC3H13', 'ZCCHC4'
+            ]
+            
+            # Load genes from file if provided
+            if gene_file:
+                file_genes = self._load_genes_from_file(gene_file)
+                if file_genes is None:
+                    return None
+                genes = list(set(genes + file_genes)) if genes else file_genes
+            
+            # Remove target gene from analysis genes if present
+            if target_gene in genes:
+                genes.remove(target_gene)
+            
+            # Filter for available genes
+            available_genes = [gene for gene in genes if gene in self.adata.var_names]
+            missing_genes = set(genes) - set(available_genes)
+            
+            if missing_genes:
+                self.logger.warning(f'Genes not found in dataset: {", ".join(missing_genes)}')
+            
+            if not available_genes:
+                self.logger.error('No valid genes found for correlation analysis')
+                return None
+            
+            # Subset data for cell type
+            cell_mask = self.adata.obs['cell_type'] == cell_type
+            adata_subset = self.adata[cell_mask]
+            
+            # Calculate expression frequency
+            n_cells = adata_subset.n_obs
+            expr_freq = (adata_subset.X > 0).sum(axis=0) / n_cells
+            
+            # Filter genes by expression threshold
+            expr_mask = expr_freq > min_expr
+            genes_to_analyze = [gene for gene, mask in zip(available_genes, expr_mask) if mask]
+            
+            if not genes_to_analyze:
+                self.logger.error(f'No genes pass expression threshold of {min_expr}')
+                return None
+            
+            # Get expression data
+            target_expr = adata_subset[:, target_gene].X.toarray().flatten()
+            
+            # Initialize results dictionary
+            results = []
+            
+            # Calculate correlations
+            for gene in genes_to_analyze:
+                gene_expr = adata_subset[:, gene].X.toarray().flatten()
+                corr_coef, p_value = pearsonr(target_expr, gene_expr)
+                
+                results.append({
+                    'gene': gene,
+                    'correlation': corr_coef,
+                    'p_value': p_value,
+                    'expression_frequency': expr_freq[available_genes.index(gene)]
+                })
+                
+            # Convert to DataFrame and sort
+            results_df = pd.DataFrame(results)
+            
+            # Filter significant correlations
+            significant_df = results_df[
+                (abs(results_df['correlation']) >= corr_threshold) & 
+                (results_df['p_value'] <= pval_threshold)
+            ]
+            
+            if significant_df.empty:
+                self.logger.info('No significant correlations found')
+                return results_df.sort_values('correlation', ascending=False)
+            
+            # Sort by absolute correlation value
+            significant_df = significant_df.sort_values('correlation', ascending=False)
+            
+            # Save results
+            output_file = os.path.join(
+                self.output_dir,
+                f'correlation_results_{cell_type}_{target_gene}.csv'
+            )
+            significant_df.to_csv(output_file, index=False)
+            
+            # Create visualization
+            self._plot_correlation_results(
+                significant_df,
+                target_gene,
+                cell_type,
+                f'correlation_plot_{cell_type}_{target_gene}.png'
+            )
+            
+            self.logger.info(
+                f'Found {len(significant_df)} significant correlations out of {len(genes_to_analyze)} analyzed genes'
+            )
+            
+            return significant_df
+            
+        except Exception as e:
+            self.logger.error(f'Error in correlation analysis: {e}')
+            return None
+
+    def _plot_correlation_results(self, results_df, target_gene, cell_type, filename):
+        """Create visualization for correlation results.
+        
+        Args:
+            results_df (pd.DataFrame): Correlation analysis results
+            target_gene (str): Target gene name
+            cell_type (str): Cell type analyzed
+            filename (str): Output filename
+        """
+        try:
+            plt.figure(figsize=(12, 6))
+            
+            # Create bar plot
+            sns.barplot(
+                data=results_df.head(20),  # Top 20 correlations
+                x='gene',
+                y='correlation',
+                palette='coolwarm'
+            )
+            
+            # Customize plot
+            plt.xticks(rotation=45, ha='right')
+            plt.title(f'Top Correlations with {target_gene} in {cell_type}')
+            plt.xlabel('Gene')
+            plt.ylabel('Correlation Coefficient')
+            
+            # Add significance markers
+            for i, p_val in enumerate(results_df.head(20)['p_value']):
+                if p_val <= 0.001:
+                    plt.text(i, 0, '***', ha='center', va='bottom')
+                elif p_val <= 0.01:
+                    plt.text(i, 0, '**', ha='center', va='bottom')
+                elif p_val <= 0.05:
+                    plt.text(i, 0, '*', ha='center', va='bottom')
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.output_dir, filename), dpi=300, bbox_inches='tight')
+            plt.close()
+            
+        except Exception as e:
+            self.logger.error(f'Error plotting correlation results: {e}')
+
 #TODO: 삭제
 def init_process(log_queue):
     logger = logging.getLogger('ScRNAseqPipeline')
