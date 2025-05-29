@@ -6,6 +6,7 @@ import logging
 import numpy as np
 import scanpy as sc
 import scanpy.external as sce
+import anndata
 import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
@@ -168,13 +169,12 @@ class ScRNAseqPipeline:
         self.logger.info('Starting quality control')
         try:
             qc_adata_list = []
-            for adata in self.adata_list:
+            for idx, adata in enumerate(self.adata_list):
+                if 'sample' not in adata.obs.columns:
+                    self.looger.warning(f"Adata at index {idx} has no 'sample' column in .obs; ")
+                    adata.obs['sample'] = f"dataset_{idx}"
                 adata = adata.copy()
                 adata.var['mt'] = adata.var_names.str.startswith('MT-') | adata.var_names.str.startswith('mt-')
-                if 'batch' in adata.obs.columns:
-                    batch_name = adata.obs['batch'].unique()[0]
-                else:
-                    batch_name = 'unknown_batch'
                 # Mitochondrial gene ratio
                 sc.pp.calculate_qc_metrics(
                     adata, qc_vars=['mt'], percent_top=None, log1p=False, inplace=True
@@ -212,6 +212,7 @@ class ScRNAseqPipeline:
 
                 # Filtering
                 initial_cell_count = adata.n_obs
+                initial_gene_count = adata.n_vars
                 cells_below_200_genes = np.sum(adata.obs['n_genes_by_counts'] < 200)
                 cells_above_5000_genes = np.sum(adata.obs['n_genes_by_counts'] > 5000)
                 cells_high_mt = np.sum(adata.obs['pct_counts_mt'] > 10)
@@ -226,15 +227,18 @@ class ScRNAseqPipeline:
                 sce.pp.scrublet(adata, batch_key='sample') # doublet detection
                 qc_adata_list.append(adata)
                 filtered_cell_count = adata.n_obs
+                filtered_gene_count = adata.n_vars
                 total_removed_cells = initial_cell_count -  filtered_cell_count
 
                 self.logger.info(f"Cells before QC: {initial_cell_count}")
+                self.logger.info(f"Genes before QC: {initial_gene_count}")
                 self.logger.info(f"Cells with genes < 200: {cells_below_200_genes}")
                 self.logger.info(f"Cells with genes > 5000: {cells_above_5000_genes}")
                 self.logger.info(f"Cells with MT > 10%: {cells_high_mt}")
                 self.logger.info(f"Total cells removed by QC {total_removed_cells}")
                 self.logger.info(f"Cells after QC: {filtered_cell_count}")
-                self.logger.info(f"Quality control completed for batch {batch_name}")
+                self.logger.info(f"Genes after QC: {filtered_gene_count}")
+                self.logger.info(f"Quality control completed for batch {adata.obs['sample']}")
             if len(self.adata_list) == 1:
                 self.adata = adata
             self.adata_list = qc_adata_list
@@ -242,37 +246,38 @@ class ScRNAseqPipeline:
             self.logger.error('Error during quality control: {}'.format(e))
             sys.exit(1)
     
-    def integrate_data(self):
+    def integrate_data(
+        self,
+        batch_key: str = 'batch',
+        join: str = 'inner'   
+    ):
         """_summary_
             Integrate the QCed datasets.
+            
+            Args:
+                batch_key: Name of the obs-column that will record each dataset'sbatch label
+                join: How to join variables across datasets ('inner' to keep intersection, 'outer' to keep union)
         """
         self.logger.info('Starting data integration')
         try:
-            all_var_names = [set(adata.var_names) for adata in self.adata_list]
-            total_vars = set.union(*all_var_names)
-            total_var_count = len(total_vars)
-            self.logger.info(f'Total number of unique genes across all datasets: {total_var_count}')
-            
-            common_var_names = set.intersection(*all_var_names)
-            common_var_count = len(common_var_names)
-            self.logger.info(f'Number of common genes: {common_var_count}')
-            
-            excluded_var_count = total_var_count - common_var_count
-            self.logger.info(f'Total number of excluded genes due to mismatched names: {excluded_var_count}')
-            
-            for i, adata in enumerate(self.adata_list):
-                original_var_count = adata.n_vars
-                adata = adata[:, list(common_var_names)]
-                new_var_count = adata.n_vars
-                excluded_vars = original_var_count - new_var_count
-                batch_name = adata.obs['batch'][0] if 'batch' in adata.obs.columns else f'Dataset_{i}'
-                self.logger.info(f'Dataset {i} ({batch_name}): Excluded {excluded_vars} genes due to mismatched names')
-                self.adata_list[i] = adata
-            self.adata = self.adata_list[0].concatenate(*self.adata_list[1:], batch_key='batch')
-            self.logger.info('Data integration completed')
-            output_file = os.path.join(self.output_dir, 'integrated_data.h5ad')
-            self.adata.write(output_file)
-            self.logger.info(f'Integrated data saved to {output_file}')
+            for idx, ad in enumerate(self.adata_list):
+                if 'sample' not in ad.obs.columns:
+                    self.looger.warning(f"Adata at index {idx} has no 'sample' column in .obs; ")
+                    ad.obs['sample'] = f"dataset_{idx}"
+            keys = [
+                ad.obs['sample'].unique()[0] for ad in self.adata_list
+            ]
+            combined = anndata.concat(
+                self.adata_list,
+                join=join,
+                label=batch_key,
+                keys=keys
+            )
+            self.adata = combined
+            self.logger.info(
+                f"Integration finished: "
+                f"{combined.n_obs} cells, {combined.n_vars} genes"
+            )
         except Exception as e:
             self.logger.error('Error during data integration: {}'.format(e))
             sys.exit(1)
@@ -472,7 +477,7 @@ class ScRNAseqPipeline:
         except Exception as e:
             self.logger.error('Error during tSNE: {}'.format(e))
             sys.exit(1)  
-   
+    
     def save_results(self):
         """_summary_
             Save the results of the pipeline
