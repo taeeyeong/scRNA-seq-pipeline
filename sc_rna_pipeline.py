@@ -18,21 +18,20 @@ import celltypist
 
 class ScRNAseqPipeline:
     def __init__(
-        self, data_paths, output_dir, genes_file=None, meta_file=None,target_gene=None, reference_gene=None, 
-        n_dims=4, random_state=42, only_highly_variable_genes=False, steps=[]
+        self, data_paths, output_dir, genes_file=None, meta_file=None,
+        n_dims=4, random_state=42, only_highly_variable_genes=False, steps=[], marker_genes={}
         ):
         self.data_paths = data_paths
         self.genes_file = genes_file
         self.meta_file = meta_file
         self.output_dir = output_dir
-        self.target_gene = target_gene
-        self.reference_gene = reference_gene
         self.n_dims = n_dims
         self.random_state = random_state
         self.adata = None
         
         self.only_highly_variable_genes = only_highly_variable_genes
         self.steps = steps
+        self.marker_genes = marker_genes
         
         self.logger = logging.getLogger('ScRNAseqPipeline')
         self.logger.setLevel(logging.INFO)
@@ -191,7 +190,7 @@ class ScRNAseqPipeline:
                 plt.xlim(0, np.percentile(adata.obs['n_genes_by_counts'], 100))
                 plt.legend(fontsize=12)
                 plt.tight_layout()
-                plt.savefig(os.path.join(self.output_dir, f"n_genes_by_counts_distribution.png"))
+                plt.savefig(os.path.join(self.output_dir, f"{adata.obs['sample'][0]}_n_genes_by_counts_distribution.png"))
                 plt.close()
 
                 plt.figure(figsize=(10, 7))
@@ -238,48 +237,12 @@ class ScRNAseqPipeline:
                 self.logger.info(f"Total cells removed by QC {total_removed_cells}")
                 self.logger.info(f"Cells after QC: {filtered_cell_count}")
                 self.logger.info(f"Genes after QC: {filtered_gene_count}")
-                self.logger.info(f"Quality control completed for batch {adata.obs['sample']}")
+                self.logger.info(f"Quality control completed for sample {adata.obs['sample'][0]}")
             if len(self.adata_list) == 1:
                 self.adata = adata
             self.adata_list = qc_adata_list
         except Exception as e:
             self.logger.error('Error during quality control: {}'.format(e))
-            sys.exit(1)
-    
-    def integrate_data(
-        self,
-        batch_key: str = 'batch',
-        join: str = 'inner'   
-    ):
-        """_summary_
-            Integrate the QCed datasets.
-            
-            Args:
-                batch_key: Name of the obs-column that will record each dataset'sbatch label
-                join: How to join variables across datasets ('inner' to keep intersection, 'outer' to keep union)
-        """
-        self.logger.info('Starting data integration')
-        try:
-            for idx, ad in enumerate(self.adata_list):
-                if 'sample' not in ad.obs.columns:
-                    self.looger.warning(f"Adata at index {idx} has no 'sample' column in .obs; ")
-                    ad.obs['sample'] = f"dataset_{idx}"
-            keys = [
-                ad.obs['sample'].unique()[0] for ad in self.adata_list
-            ]
-            combined = anndata.concat(
-                self.adata_list,
-                join=join,
-                label=batch_key,
-                keys=keys
-            )
-            self.adata = combined
-            self.logger.info(
-                f"Integration finished: "
-                f"{combined.n_obs} cells, {combined.n_vars} genes"
-            )
-        except Exception as e:
-            self.logger.error('Error during data integration: {}'.format(e))
             sys.exit(1)
         
     def preprocess_data(self):
@@ -295,9 +258,7 @@ class ScRNAseqPipeline:
                 sc.pp.normalize_total(adata, target_sum=1e4)
                 # Logarithmize the data
                 sc.pp.log1p(adata)
-
-                # find highly variable genes
-                sc.pp.highly_variable_genes(adata, n_top_genes=2000)
+                
                 adata.raw = adata
                 processed_adata_list.append(adata)
             self.adata_list = processed_adata_list
@@ -306,7 +267,51 @@ class ScRNAseqPipeline:
         except Exception as e:
             self.logger.error('Error during data preprocessing: {}'.format(e))
             sys.exit(1)
-    
+            
+    def integrate_data(
+        self,
+        batch_key: str = 'batch',
+        join: str = 'inner'   
+    ):
+        """_summary_
+            Integrate the QCed datasets.
+            
+            Args:
+                batch_key: Name of the obs-column that will record each dataset's batch label
+                join: How to join variables across datasets ('inner' to keep intersection, 'outer' to keep union)
+        """
+        self.logger.info('Starting data integration')
+        try:
+            for idx, ad in enumerate(self.adata_list):
+                if 'sample' not in ad.obs.columns:
+                    self.logger.warning(f"Adata {idx} has no 'sample' column in .obs; ")
+                    ad.obs['sample'] = f"dataset_{idx}"
+                if ad.raw is not None:
+                    self.logger.info(f"[Dataset {idx}] clearing raw layer to avoid duplicate-label errors")
+                    ad.raw = None
+
+            keys = [
+                ad.obs['sample'].unique()[0] for ad in self.adata_list
+            ]
+            
+            
+            
+            combined = anndata.concat(
+                self.adata_list,
+                join=join,
+                label=batch_key,
+                keys=keys,
+            )
+            self.adata = combined
+            self.adata.raw = self.adata
+            self.logger.info(
+                f"Integration finished: "
+                f"{combined.n_obs} cells, {combined.n_vars} genes"
+            )
+        except Exception as e:
+            self.logger.error('Error during data integration: {}'.format(e))
+            sys.exit(1)
+            
     # def annotate_cell_types(self):
     #     """_summary_
     #         Annotate cell types based on Celltypist
@@ -332,6 +337,8 @@ class ScRNAseqPipeline:
         """
         self.logger.info('Starting PCA')
         try:
+            # find highly variable genes
+            sc.pp.highly_variable_genes(self.adata, n_top_genes=2000)
             sc.pp.scale(self.adata, max_value=10)
             sc.pp.pca(self.adata, svd_solver='arpack')
             sc.pl.pca_variance_ratio(self.adata, log=False, save='_pc_elbow_plot.png')
@@ -353,7 +360,6 @@ class ScRNAseqPipeline:
         
     def annotate_cell_types(
         self,
-        marker_genes: Dict[str, List[str]],
         score_perceontile: float = 50,
         min_markers: int = 3,
         min_delta: float = 0.04,
@@ -366,7 +372,6 @@ class ScRNAseqPipeline:
             Assign cell types to clusters based on their average expression and the provided marker_genes dictionary.
 
             Args:
-                param marker_genes: Dict[str, List[str]] mapping each cell type to its list of marker genes
                 param score_percentile: Percentile at which to set the best_score threshold (default: 50)
                 param min_markers: Minimum number of matched marker genes required for assignment
                 param min_delta: Minimum gap required between the top and second-best score for confident assignment
@@ -377,6 +382,7 @@ class ScRNAseqPipeline:
             raise ValueError("adata.raw is Empty")
         raw_df = self.adata.raw.to_adata().to_df()
         
+        marker_genes = self.marker_genes
         clusters = self.adata.obs[obs_key]
         cluster_avg = raw_df.groupby(clusters).mean()
         
@@ -478,6 +484,51 @@ class ScRNAseqPipeline:
             self.logger.error('Error during tSNE: {}'.format(e))
             sys.exit(1)  
     
+    # TODO: error 수정 
+    # @staticmethod
+    # def _sanitize_uns(adata):
+    #     """
+    #     Recursively convert unsupported types in adata.uns to supported ones for h5ad.
+    #     """
+    #     def sanitize(obj):
+    #         if isinstance(obj, dict):
+    #             return {str(k): sanitize(v) for k, v in obj.items()}
+    #         elif isinstance(obj, (tuple, set)):
+    #             return [sanitize(v) for v in obj]
+    #         elif isinstance(obj, list):
+    #             return [sanitize(v) for v in obj]
+    #         elif isinstance(obj, (np.integer, np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64)):
+    #             return int(obj)
+    #         elif isinstance(obj, (np.floating, np.float_, np.float16, np.float32, np.float64)):
+    #             return float(obj)
+    #         elif isinstance(obj, np.ndarray):
+    #             return obj.tolist()
+    #         elif isinstance(obj, pd.DataFrame):
+    #             return obj.to_dict(orient='list')
+    #         elif isinstance(obj, pd.Series):
+    #             return obj.to_list()
+    #         elif isinstance(obj, (str, int, float, bool, type(None))):
+    #             return obj
+    #         else:
+    #             return str(obj)  # fallback: convert to string
+
+    #     adata.uns = sanitize(adata.uns)
+    #     return adata
+
+    # def save_h5ad(self, file_name: str = None):
+    #     """
+    #     """
+    #     fname = file_name if file_name else "final_adata.h5ad"
+    #     out_path = os.path.join(self.output_dir, fname)
+    #     try:
+    #         self.logger.info(f'Sanitizing .uns before saving to {out_path}')
+    #         self.adata = self._sanitize_uns(self.adata)
+    #         self.adata.write(out_path)
+    #         self.logger.info(f"Saved adata to {out_path}")
+    #     except Exception as e:
+    #         self.logger.error(f"Error saving adata to h5ad: {e}", exc_info=True)
+    #         sys.exit(1)
+            
     def save_results(self):
         """_summary_
             Save the results of the pipeline
@@ -505,6 +556,11 @@ class ScRNAseqPipeline:
             self.preprocess_data()
         else:
             self.logger.info('Skipping preprocessing step')
+        
+        if 'integrate_data' in self.steps:
+            self.integrate_data()
+        else:
+            self.logger.info('Skipping integration step')
             
         if 'pca' in self.steps:
             self.run_pca()
@@ -520,6 +576,11 @@ class ScRNAseqPipeline:
             self.annotate_cell_types()
         else:
             self.logger.info('Skipping cell type annotation step')     
+        
+        if 'save_h5ad' in self.steps:
+            self.save_h5ad()
+        else:
+            self.logger.info('Skipping save h5ad step')
             
         self.save_results()
         self.logger.info('Pipeline execution completed successfully')
@@ -538,17 +599,13 @@ def parse_arguments():
     parser.add_argument('--genes_file', type=str, default=None, help='Path to genes file (required for mtx.gz)')
     parser.add_argument('--meta_file', type=str, default=None, help='Path to metadata file (required for mtx.gz)')
     parser.add_argument('--output_dir', type=str, default='results', help='Directory to save outputs')
-    parser.add_argument('--gene', type=str, help='Gene of interest to compute correlation')
-    parser.add_argument('--target_gene', type=str, help='Target gene of interest')
-    parser.add_argument('--reference_gene', type=str, help='Reference gene to compare with')
-    parser.add_argument('--cell_types', type=str, nargs='*', help='List of cell types to analyze (e.g., T_cells B_cells)')
     parser.add_argument('--n_dims', type=int, default=4, help='Number of principal components to use')
     parser.add_argument('--random_state', type=int, default=42, help='Random state for reproducibility')
     
     parser.add_argument('--only_highly_variable_genes', action='store_true', help='Using only highly variable genes in all analysis steps')
     parser.add_argument('--steps', type=str, nargs='*', help='List of steps to run in the pipeline')
+    parser.add_argument('--marker_genes', type=Dict, default=None, nargs='*', help=' Dict[str, List[str]] mapping each cell type to its list of marker genes')
     
-    parser.add_argument('--skip_correlation', action='store_true', help='Skip the correlation computation step')
     args = parser.parse_args()
     for path in args.data_paths:
         if path.endswith('.mtx.gz'):
@@ -563,13 +620,11 @@ def main():
     pipeline = ScRNAseqPipeline(
         data_paths=args.data_paths,
         output_dir=args.output_dir,
-        gene=args.gene,
-        target_gene=args.target_gene,
-        cell_types=args.cell_types,
         n_dims=args.n_dims,
         random_state=args.random_state,
         only_highly_variable_genes=args.only_highly_variable_genes,
         steps=args.steps,
+        marker_genes = args.marker_genes
     )
     pipeline.run_pipeline()
     
