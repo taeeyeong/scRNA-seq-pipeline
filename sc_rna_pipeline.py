@@ -75,6 +75,8 @@ class ScRNAseqPipeline:
                     file_type = 'csv_gz'
                 elif data_path.endswith('.mtx.gz'):
                     file_type = 'mtx_gz'
+                elif data_path.endswith('.mtx'):
+                    file_type = 'mtx'
                 else:
                     self.logger.error(f'Unsupported data format for {data_path}')
                     sys.exit(1)
@@ -134,6 +136,37 @@ class ScRNAseqPipeline:
                     except Exception as inner_e:
                         self.logger.error(f'Exception reading mtx.gz files: {inner_e}')
                         adata = None
+                        
+                elif file_type == 'mtx':
+                    if self.genes_file is None or self.meta_file is None:
+                        self.logger.error('genes_file and meta_file must be specified for mtx format.')
+                        continue
+
+                    self.logger.info(f'Reading mtx file from {data_path}')
+
+                    try:
+                        from scipy import io
+                        import anndata as ad
+                        with open(data_path, 'rb') as f:
+                            X = io.mmread(f).tocsr()
+
+                        genes_df = pd.read_csv(self.genes_file)
+                        cells_df = pd.read_csv(self.meta_file)
+                        genes = genes_df['gene_name'].tolist()
+                        barcodes = cells_df['bc_wells'].tolist()
+
+                        if X.shape[0] == len(genes) and X.shape[1] == len(barcodes):
+                            adata = ad.AnnData(X=X.T, var=pd.DataFrame(index=genes), obs=pd.DataFrame(index=barcodes))
+                        elif X.shape[0] == len(barcodes) and X.shape[1] == len(genes):
+                            adata = ad.AnnData(X=X, var=pd.DataFrame(index=genes), obs=pd.DataFrame(index=barcodes))
+                        else:
+                            self.logger.error(f'Dimension mismatch: X{X.shape}, genes({len(genes)}), barcodes({len(barcodes)})')
+                            adata = None
+                            continue
+                    except Exception as inner_e:
+                        self.logger.error(f'Exception reading mtx files: {inner_e}')
+                        adata = None
+
                 else:
                     self.logger.error(f'Unsupported data format for {data_path}')
                     sys.exit(1)
