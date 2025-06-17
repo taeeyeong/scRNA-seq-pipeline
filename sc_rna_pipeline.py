@@ -255,12 +255,20 @@ class ScRNAseqPipeline:
                     (adata.obs['pct_counts_mt'] < 10),
                     :
                 ]
-                sc.pp.filter_genes(adata, min_cells=3)    
-                sce.pp.scrublet(adata, batch_key='sample') # doublet detection
+                sc.pp.filter_genes(adata, min_cells=3)
+                sce.pp.scrublet(adata, batch_key='sample')  # doublet detection
+
+                if 'predicted_doublet' in adata.obs.columns:
+                    doublet_count = int(adata.obs['predicted_doublet'].sum())
+                    adata = adata[~adata.obs['predicted_doublet']].copy()
+                    self.logger.info(f"Removed {doublet_count} predicted doublets")
+                else:
+                    self.logger.warning('Scrublet did not add predicted_doublet column; no doublet filtering applied')
+
                 qc_adata_list.append(adata)
                 filtered_cell_count = adata.n_obs
                 filtered_gene_count = adata.n_vars
-                total_removed_cells = initial_cell_count -  filtered_cell_count
+                total_removed_cells = initial_cell_count - filtered_cell_count
 
                 self.logger.info(f"Cells before QC: {initial_cell_count}")
                 self.logger.info(f"Genes before QC: {initial_gene_count}")
