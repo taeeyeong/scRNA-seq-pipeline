@@ -203,7 +203,9 @@ class ScRNAseqPipeline:
             qc_adata_list = []
             for idx, adata in enumerate(self.adata_list):
                 if 'sample' not in adata.obs.columns:
-                    self.looger.warning(f"Adata at index {idx} has no 'sample' column in .obs; ")
+                    self.logger.warning(
+                        f"Adata at index {idx} has no 'sample' column in .obs; "
+                    )
                     adata.obs['sample'] = f"dataset_{idx}"
                 adata = adata.copy()
                 adata.var['mt'] = adata.var_names.str.startswith('MT-') | adata.var_names.str.startswith('mt-')
@@ -255,12 +257,26 @@ class ScRNAseqPipeline:
                     (adata.obs['pct_counts_mt'] < 10),
                     :
                 ]
-                sc.pp.filter_genes(adata, min_cells=3)    
-                sce.pp.scrublet(adata, batch_key='sample') # doublet detection
+                sc.pp.filter_genes(adata, min_cells=3)
+                sce.pp.scrublet(adata, batch_key='sample')  # doublet detection
+
+                if 'predicted_doublet' in adata.obs.columns:
+                    doublet_cells = adata.obs.index[adata.obs['predicted_doublet']].tolist()
+                    doublet_count = len(doublet_cells)
+                    if doublet_count:
+                        self.logger.info(
+                            f"Removed {doublet_count} predicted doublets: {', '.join(doublet_cells)}"
+                        )
+                    adata = adata[~adata.obs['predicted_doublet']].copy()
+                else:
+                    self.logger.warning(
+                        'Scrublet did not add predicted_doublet column; no doublet filtering applied'
+                    )
+
                 qc_adata_list.append(adata)
                 filtered_cell_count = adata.n_obs
                 filtered_gene_count = adata.n_vars
-                total_removed_cells = initial_cell_count -  filtered_cell_count
+                total_removed_cells = initial_cell_count - filtered_cell_count
 
                 self.logger.info(f"Cells before QC: {initial_cell_count}")
                 self.logger.info(f"Genes before QC: {initial_gene_count}")
