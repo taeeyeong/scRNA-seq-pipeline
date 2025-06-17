@@ -538,6 +538,10 @@ class ScRNAseqPipeline:
         fname = file_name if file_name else "final_adata.h5ad"
         out_path = os.path.join(self.output_dir, fname)
         
+        if 'cluster_debug_info' in self.adata.uns:
+            for cl, info in self.adata.uns['cluster_debug_info'].items():
+                info.pop('all_details', None)
+        
         try:
             self.logger.info(f"Sanitizing .uns before saving to {out_path}")
             
