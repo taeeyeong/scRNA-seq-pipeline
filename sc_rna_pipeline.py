@@ -533,52 +533,91 @@ class ScRNAseqPipeline:
             self.logger.error('Error during tSNE: {}'.format(e))
             sys.exit(1)  
     
-    @staticmethod
-    def _sanitize_uns(adata):
-        """Recursively convert unsupported types in ``adata.uns`` to ones that
-        can be written to an ``h5ad`` file."""
-
-        def sanitize(obj):
-            if isinstance(obj, dict):
-                return {str(k): sanitize(v) for k, v in obj.items()}
-            if isinstance(obj, (tuple, set)):
-                return [sanitize(v) for v in obj]
-            if isinstance(obj, list):
-                return [sanitize(v) for v in obj]
-            if isinstance(obj, (np.integer, np.int_, np.intc, np.intp,
-                                np.int8, np.int16, np.int32, np.int64)):
-                return int(obj)
-            if isinstance(obj, (np.floating, np.float_, np.float16,
-                                np.float32, np.float64)):
-                return float(obj)
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            if isinstance(obj, pd.DataFrame):
-                return obj.to_dict(orient="list")
-            if isinstance(obj, pd.Series):
-                return obj.to_list()
-            if isinstance(obj, pd.Index):
-                return obj.tolist()
-            if isinstance(obj, (str, int, float, bool, type(None))):
-                return obj
-            return str(obj)
-
-        adata.uns = sanitize(adata.uns)
-        return adata
-
     def save_h5ad(self, file_name: str = None):
         """Save the AnnData object to ``h5ad`` after sanitizing ``.uns``."""
-
         fname = file_name if file_name else "final_adata.h5ad"
         out_path = os.path.join(self.output_dir, fname)
+        
         try:
             self.logger.info(f"Sanitizing .uns before saving to {out_path}")
+            
+            # Debug: Print the structure of .uns before sanitization
+            self.logger.info("Contents of adata.uns before sanitization:")
+            self._debug_uns_contents(self.adata.uns)
+            
+            # Sanitize
             self.adata = self._sanitize_uns(self.adata)
+            
+            # Debug: Print the structure of .uns after sanitization
+            self.logger.info("Contents of adata.uns after sanitization:")
+            self._debug_uns_contents(self.adata.uns)
+            
+            # Try to save
             self.adata.write(out_path)
             self.logger.info(f"Saved adata to {out_path}")
+            
         except Exception as e:
             self.logger.error(f"Error saving adata to h5ad: {e}", exc_info=True)
+            
+            # Additional debugging: try to identify the problematic key
+            self.logger.info("Attempting to identify problematic keys in .uns...")
+            self._identify_problematic_keys()
+            
             sys.exit(1)
+    
+    def _debug_uns_contents(self, uns_dict, prefix=""):
+        """Debug helper to print the contents and types in .uns"""
+        for key, value in uns_dict.items():
+            full_key = f"{prefix}.{key}" if prefix else key
+            value_type = type(value).__name__
+
+            if isinstance(value, dict):
+                self.logger.info(f"  {full_key}: {value_type} (dict with {len(value)} keys)")
+                self._debug_uns_contents(value, full_key)
+            elif isinstance(value, (list, tuple)):
+                if len(value) > 0:
+                    first_type = type(value[0]).__name__ if len(value) > 0 else "empty"
+                    self.logger.info(f"  {full_key}: {value_type} (length {len(value)}, first element type: {first_type})")
+
+                    # Check if all elements are the same type
+                    types_in_list = set(type(item).__name__ for item in value)
+                    if len(types_in_list) > 1:
+                        self.logger.info(f"    Mixed types in list: {types_in_list}")
+
+                    # Show first few elements for problematic lists
+                    if any(not isinstance(item, (str, int, float, bool, type(None))) for item in value[:5]):
+                        self.logger.info(f"    First few elements: {[str(item)[:50] + '...' if len(str(item)) > 50 else str(item) for item in value[:3]]}")
+                else:
+                    self.logger.info(f"  {full_key}: {value_type} (empty)")
+            else:
+                value_str = str(value)[:100] + "..." if len(str(value)) > 100 else str(value)
+                self.logger.info(f"  {full_key}: {value_type} = {value_str}")
+
+    def _identify_problematic_keys(self):
+        """Try to identify which keys in .uns are causing issues"""
+        import tempfile
+
+        for key in list(self.adata.uns.keys()):
+            try:
+                # Create a temporary adata with only this key
+                temp_adata = self.adata.copy()
+                temp_adata.uns = {key: self.adata.uns[key]}
+
+                # Try to save it
+                with tempfile.NamedTemporaryFile(suffix='.h5ad', delete=True) as tmp_file:
+                    temp_adata.write(tmp_file.name)
+                    self.logger.info(f"Key '{key}' can be saved successfully")
+
+            except Exception as e:
+                self.logger.error(f"Key '{key}' is problematic: {e}")
+                self.logger.info(f"  Type: {type(self.adata.uns[key])}")
+                self.logger.info(f"  Value preview: {str(self.adata.uns[key])[:200]}")
+
+                # If it's a dict, check its contents
+                if isinstance(self.adata.uns[key], dict):
+                    self.logger.info(f"  Dict keys: {list(self.adata.uns[key].keys())}")
+                    for subkey, subvalue in self.adata.uns[key].items():
+                        self.logger.info(f"    {subkey}: {type(subvalue)} = {str(subvalue)[:100]}")
             
     def save_results(self):
         """_summary_
