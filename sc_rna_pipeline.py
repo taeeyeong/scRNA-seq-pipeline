@@ -203,7 +203,9 @@ class ScRNAseqPipeline:
             qc_adata_list = []
             for idx, adata in enumerate(self.adata_list):
                 if 'sample' not in adata.obs.columns:
-                    self.looger.warning(f"Adata at index {idx} has no 'sample' column in .obs; ")
+                    self.logger.warning(
+                        f"Adata at index {idx} has no 'sample' column in .obs; "
+                    )
                     adata.obs['sample'] = f"dataset_{idx}"
                 adata = adata.copy()
                 adata.var['mt'] = adata.var_names.str.startswith('MT-') | adata.var_names.str.startswith('mt-')
@@ -259,11 +261,25 @@ class ScRNAseqPipeline:
                 sce.pp.scrublet(adata, batch_key='sample')  # doublet detection
 
                 if 'predicted_doublet' in adata.obs.columns:
+<<<<<<< codex/quality_control-함수-doublet-finding-필터링-확인
+                    doublet_cells = adata.obs.index[adata.obs['predicted_doublet']].tolist()
+                    doublet_count = len(doublet_cells)
+                    if doublet_count:
+                        self.logger.info(
+                            f"Removed {doublet_count} predicted doublets: {', '.join(doublet_cells)}"
+                        )
+                    adata = adata[~adata.obs['predicted_doublet']].copy()
+                else:
+                    self.logger.warning(
+                        'Scrublet did not add predicted_doublet column; no doublet filtering applied'
+                    )
+=======
                     doublet_count = int(adata.obs['predicted_doublet'].sum())
                     adata = adata[~adata.obs['predicted_doublet']].copy()
                     self.logger.info(f"Removed {doublet_count} predicted doublets")
                 else:
                     self.logger.warning('Scrublet did not add predicted_doublet column; no doublet filtering applied')
+>>>>>>> main
 
                 qc_adata_list.append(adata)
                 filtered_cell_count = adata.n_obs
