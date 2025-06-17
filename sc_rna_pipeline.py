@@ -533,50 +533,52 @@ class ScRNAseqPipeline:
             self.logger.error('Error during tSNE: {}'.format(e))
             sys.exit(1)  
     
-    # TODO: error 수정 
-    # @staticmethod
-    # def _sanitize_uns(adata):
-    #     """
-    #     Recursively convert unsupported types in adata.uns to supported ones for h5ad.
-    #     """
-    #     def sanitize(obj):
-    #         if isinstance(obj, dict):
-    #             return {str(k): sanitize(v) for k, v in obj.items()}
-    #         elif isinstance(obj, (tuple, set)):
-    #             return [sanitize(v) for v in obj]
-    #         elif isinstance(obj, list):
-    #             return [sanitize(v) for v in obj]
-    #         elif isinstance(obj, (np.integer, np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64)):
-    #             return int(obj)
-    #         elif isinstance(obj, (np.floating, np.float_, np.float16, np.float32, np.float64)):
-    #             return float(obj)
-    #         elif isinstance(obj, np.ndarray):
-    #             return obj.tolist()
-    #         elif isinstance(obj, pd.DataFrame):
-    #             return obj.to_dict(orient='list')
-    #         elif isinstance(obj, pd.Series):
-    #             return obj.to_list()
-    #         elif isinstance(obj, (str, int, float, bool, type(None))):
-    #             return obj
-    #         else:
-    #             return str(obj)  # fallback: convert to string
+    @staticmethod
+    def _sanitize_uns(adata):
+        """Recursively convert unsupported types in ``adata.uns`` to ones that
+        can be written to an ``h5ad`` file."""
 
-    #     adata.uns = sanitize(adata.uns)
-    #     return adata
+        def sanitize(obj):
+            if isinstance(obj, dict):
+                return {str(k): sanitize(v) for k, v in obj.items()}
+            if isinstance(obj, (tuple, set)):
+                return [sanitize(v) for v in obj]
+            if isinstance(obj, list):
+                return [sanitize(v) for v in obj]
+            if isinstance(obj, (np.integer, np.int_, np.intc, np.intp,
+                                np.int8, np.int16, np.int32, np.int64)):
+                return int(obj)
+            if isinstance(obj, (np.floating, np.float_, np.float16,
+                                np.float32, np.float64)):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, pd.DataFrame):
+                return obj.to_dict(orient="list")
+            if isinstance(obj, pd.Series):
+                return obj.to_list()
+            if isinstance(obj, pd.Index):
+                return obj.tolist()
+            if isinstance(obj, (str, int, float, bool, type(None))):
+                return obj
+            return str(obj)
 
-    # def save_h5ad(self, file_name: str = None):
-    #     """
-    #     """
-    #     fname = file_name if file_name else "final_adata.h5ad"
-    #     out_path = os.path.join(self.output_dir, fname)
-    #     try:
-    #         self.logger.info(f'Sanitizing .uns before saving to {out_path}')
-    #         self.adata = self._sanitize_uns(self.adata)
-    #         self.adata.write(out_path)
-    #         self.logger.info(f"Saved adata to {out_path}")
-    #     except Exception as e:
-    #         self.logger.error(f"Error saving adata to h5ad: {e}", exc_info=True)
-    #         sys.exit(1)
+        adata.uns = sanitize(adata.uns)
+        return adata
+
+    def save_h5ad(self, file_name: str = None):
+        """Save the AnnData object to ``h5ad`` after sanitizing ``.uns``."""
+
+        fname = file_name if file_name else "final_adata.h5ad"
+        out_path = os.path.join(self.output_dir, fname)
+        try:
+            self.logger.info(f"Sanitizing .uns before saving to {out_path}")
+            self.adata = self._sanitize_uns(self.adata)
+            self.adata.write(out_path)
+            self.logger.info(f"Saved adata to {out_path}")
+        except Exception as e:
+            self.logger.error(f"Error saving adata to h5ad: {e}", exc_info=True)
+            sys.exit(1)
             
     def save_results(self):
         """_summary_
