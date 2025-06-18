@@ -548,8 +548,11 @@ class ScRNAseqPipeline:
 
         # 2) Attach raw if it exists
         if self.adata.raw is not None:
-            # raw is itself an AnnData with .X, .var, .obs
-            minimal.raw = self.adata.raw.copy()
+            minimal.raw = anndata.AnnData(
+                X=self.adata.X.copy(),  # just expression matrix
+                var=self.adata.var.copy(),  # genes (required for raw)
+                obs=self.adata.obs.copy()   # optional, included for completeness
+        )
 
         try:
             self.logger.info(f"Writing AnnData (X, obs, var, raw) to {out_path}")
